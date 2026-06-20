@@ -1,0 +1,11 @@
+node_modules/
+build/
+dist/
+artifacts/
+*.tsbuildinfo
+# Plugin binaries
+plugins/greet-go/greet
+
+# Plugin runtime artifacts
+electro-plugins.log
+plugins/**/*.log
