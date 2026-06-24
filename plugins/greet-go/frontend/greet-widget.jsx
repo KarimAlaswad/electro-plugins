@@ -1,7 +1,6 @@
 import { useState } from "preact/hooks"
-import { render } from "preact"
 
-function GreetUI() {
+export default function GreetUI() {
   const [name, setName] = useState("World")
   const [result, setResult] = useState(null)
 
@@ -29,14 +28,3 @@ function GreetUI() {
     </div>
   )
 }
-
-class GreetWidget extends HTMLElement {
-  connectedCallback() {
-    this.root = render(<GreetUI />, this)
-  }
-  disconnectedCallback() {
-    render(null, this)
-  }
-}
-
-customElements.define("greet-widget", GreetWidget)

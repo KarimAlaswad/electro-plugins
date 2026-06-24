@@ -1,128 +1,282 @@
 # Electro Plugins — Complete Project Knowledge Base
 
-**⚠️ CRITICAL RULE: NEVER TOUCH ANY PROJECT CODE.** Your job is knowledge management only.
-- Modify ONLY this file (`AGENTS.md`) with project-specific information
-- Modify ONLY `~/.config/opencode/skills/coding/SKILL.md` with general coding instructions
-- NEVER create, edit, or delete any other files in the project
-- The user handles ALL code changes themselves
-- This rule exists because the user wants full control over their code
+## CRITICAL: The Two-File Rule (ABSOLUTE)
+You (the AI agent) may ONLY modify two files:
+1. **This file** (`AGENTS.md`) — all project-specific knowledge
+2. **`~/.config/opencode/skills/coding/SKILL.md`** — all general coding/teaching rules
+
+NEVER create, edit, or delete any other file in this project. The user does ALL code work.
+
+You MUST update BOTH files with every single prompt — actively check if anything changed
+and record it. Never assume "the last agent already handled this." Always verify.
+See the "Auto-Update Protocol" section in SKILL.md for the full rule.
 
 ---
 
 ## Quick Summary
-Language-agnostic modular desktop app where every feature is a plugin. Plugins communicate with the host via subprocess stdin/stdout JSON-RPC. Desktop prototype built with Electrobun (Bun/TypeScript). Frontend is React + Tailwind + Vite (HMR). Two demo plugins exist: greet (Go) and logger (Python). Currently expanding to: plugin manifests, frontend Web Components for plugin UIs, and an in-app plugin Store with one-click install from URL.
+Language-agnostic modular desktop app where every feature is a plugin communicating
+via subprocess stdin/stdout JSON-RPC. Built with Electrobun (Bun/TypeScript desktop
+framework). Frontend: React + Tailwind + Vite (HMR). Plugins can be any language.
+Plugin UIs use Web Components (any framework bundled to self-contained .js).
+
+Phase 1 (Plugin System) is COMPLETE — flat manifests, host manifest scanning at startup,
+plugin spawning with stdin/stdout pipes, JSON-RPC routing by method prefix, Web Component
+frontends (Preact + Vue), centralized build script (scripts/build-plugins.js), auto-load
+all plugin UIs on startup via window.__pluginRpc() global bridge. Two demo plugins exist:
+greet (Go + Preact) and logger (Python + Vue).
+
+Long-term vision: a unified API client that aggregates every internet service by media
+type (posts, shorts, videos, DMs, images, etc.) into one app, with community-built
+generalized features per media type.
 
 ---
 
 ## Goal
-Build a language-agnostic, fully modular desktop app where every feature is a plugin. The plugin system is independent of the "skeleton" (the app framework). The same plugins work on any skeleton — Electrobun (desktop now), Tauri or zero-native (desktop + mobile later). Everything is a plugin, including the frontend and eventually the skeleton itself.
+Build a language-agnostic, fully modular desktop app where every feature is a plugin.
+The plugin system is independent of the "skeleton" (the app framework). The same plugins
+work on any skeleton — Electrobun (desktop now), Tauri or zero-native (desktop + mobile later).
+
+Long-term vision: a unified API client that aggregates every internet service into one
+interface. Content is categorized by MEDIA TYPE (posts, shorts, videos, images, DMs, etc.),
+not by service. Users get one feed per media type populated from all the services they
+choose. Features are generalized per media type — if someone builds auto-scroll for shorts,
+ALL shorts (TikTok, Reels, YT Shorts) get it automatically. This will be built GRADUALLY,
+starting with one simple API at a time.
+
+---
+
+## Long-Term Vision — Unified API Client
+
+### The Problem
+Currently every internet service has its own dedicated client app:
+- NewPipe for YouTube, Alicord for Discord
+- Separate apps for Twitter, Instagram, Telegram, Reddit, TikTok
+- Different UI, different features, different codebases — no sharing between them
+
+### The Solution: One App for Every API
+A single desktop app where every internet service is a plugin.
+Content is organized by MEDIA TYPE, not by service.
+
+**Media Type Examples**
+- **Posts/Threads**: Reddit posts, Twitter threads, Bluesky, Hacker News stories
+- **Shorts**: TikTok, Instagram Reels, YouTube Shorts, Reddit Watch
+- **Long Videos**: YouTube, PeerTube, Vimeo, Nebula
+- **Images**: Instagram, Flickr, Imgur, 500px
+- **DMs/Chat**: Discord DMs, Telegram, Twitter DMs, Instagram DMs
+- **Live**: Twitch, YouTube Live, Kick
+- **Music**: Spotify, YouTube Music, SoundCloud
+- **Books**: Goodreads, Project Gutenberg, Archive.org
+- **Shopping**: Amazon, eBay, Etsy — unified product feed
+- **Anime/Manga**: MyAnimeList, AniList, Crunchyroll, MangaDex
+- **Recipes**: AllRecipes, SeriousEats, NYT Cooking
+- ...and anything else — theoretically infinite (one per API endpoint type)
+
+Each media type has one feed in the app. The user adds/removes services from each
+feed freely. Adding a new service to a feed gives you ALL that service's content
+mixed in with everything else.
+
+### Generalized Features per Media Type
+Features attach to the MEDIA TYPE, not the service:
+- Auto-scroll for shorts feed → ALL shorts get it (TikTok + Reels + YT Shorts)
+- Ad-skip for long videos → ALL long videos get it
+- Download for images → ALL images from any service get it
+- Translation for posts → ALL posts get it
+- Any QoL feature built by the community → works everywhere instantly
+
+No more waiting for YouTube to add a feature you want. No more missing auto-scroll
+on Reels while TikTok has it. The community builds features once, and they work for
+every service with that media type.
+
+### How We Get There (Gradual)
+1. Start with simple individual API plugins (fetch data, show on screen)
+2. When multiple plugins produce the same media type → build a unified feed
+3. Build generalized features for that media type
+4. Repeat for more APIs and media types as interest grows
+5. Architecture evolves organically as patterns emerge (no premature abstraction)
+
+**This is a long-term vision, not a right-now requirement. We're prototyping:
+building the first real API plugin to fetch internet data and show it on screen.**
 
 ---
 
 ## Core Architecture
 
+### Current Architecture (Phase 1 Complete)
+
 ```
-┌──────────────────────────────────────────────────────┐
-│  WebView (React + Tailwind + Vite HMR)                │
-│  - Plugin cards with alive/dead status                │
-│  - Method buttons (click → call plugin)               │
-│  - Result display (JSON formatted)                    │
-│  - FUTURE: Web Component slot for plugin UIs          │
-│  - FUTURE: Store tab for browsing + installing        │
-│         │                                             │
-│         │ electroview.rpc.request.pluginRequest()      │
-│         ▼                                             │
-│  ┌──────────────────────────────────────────────────┐ │
-│  │  Host (Bun process — src/bun/index.ts)           │ │
-│  │  - Reads config.json (future: scans manifests)   │ │
-│  │  - Spawns plugins via Bun.spawn()                │ │
-│  │  - Routes JSON-RPC by method prefix match        │ │
-│  │    ("greet." → greet plugin, "log." → logger)    │ │
-│  │  - Health check every 5s (logs dead, no restart) │ │
-│  │  - Cleanup: kills all subprocesses on SIGINT     │ │
-│  │  - 10-second timeout per plugin request          │ │
-│  └──┬──────────────┬───────────────────────────────┘ │
-│     │ stdin/stdout  │ stdin/stdout                    │
-│  ┌──▼─────────┐  ┌─▼───────────┐                     │
-│  │ Go Plugin   │  │ Python      │                     │
-│  │ (greet)     │  │ Plugin      │                     │
-│  │ greet.hello │  │ (logger)    │                     │
-│  │ greet.bye   │  │ log.info    │                     │
-│  │             │  │ log.list    │                     │
-│  └─────────────┘  └─────────────┘                     │
-└──────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  WebView (React + Tailwind + Vite HMR)                           │
+│  App.tsx (~152 lines):                                           │
+│  - Loads all manifests on mount                                  │
+│  - Auto-loads all plugin Web Components via <script> injection   │
+│  - Plugin cards with alive/dead badge + method buttons           │
+│  - WebComponentSlot renders each plugin's WC directly in card    │
+│  - Result display (formatted JSON)                                │
+│         │                                                        │
+│         │ window.__pluginRpc(method, params)                     │
+│         │     → electroview.rpc.request.pluginRequest()          │
+│         ▼                                                        │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │ Host (Bun process — src/bun/index.ts ~272 lines)           │  │
+│  │ 1. findProjectRoot() — walks up from import.meta.dir       │  │
+│  │ 2. Scans plugins/*/plugin.json via readdirSync + JSON.parse│  │
+│  │ 3. resolvePath() — makes relative paths absolute for spawn │  │
+│  │ 4. Spawns plugins via Bun.spawn() (stdin/stdout pipes)     │  │
+│  │ 5. sendToPlugin() — writes JSON to plugin stdin            │  │
+│  │ 6. readStdout() — async reader with line buffering         │  │
+│  │ 7. routeRequest() — method prefix match → Promise(10s)     │  │
+│  │ 8. 4 RPC handlers: pluginRequest, pluginList,              │  │
+│  │    getPluginManifests, getPluginFrontend                    │  │
+│  │ 9. Health check (5s), SIGINT cleanup                       │  │
+│  └──┬────────────────┬───────────────────────────────────────┘  │
+│     │ stdin/stdout   │ stdin/stdout                              │
+│  ┌──▼──────────┐  ┌─▼────────────┐                              │
+│  │ Go Plugin    │  │ Python       │                              │
+│  │ (greet)      │  │ Plugin       │                              │
+│  │ greet.hello  │  │ (logger)     │                              │
+│  │ greet.bye    │  │ log.info     │                              │
+│  │              │  │ log.list     │                              │
+│  └──────────────┘  └──────────────┘                              │
+│                                                                  │
+│  Frontend Plugins (Web Components, injected into WebView):       │
+│  ┌──────────────────┐  ┌──────────────────┐                     │
+│  │ <greet-widget>    │  │ <log-viewer>     │                     │
+│  │ (Preact, esbuild) │  │ (Vue, Vite build)│                     │
+│  │ Hello/Bye buttons │  │ Refresh + log    │                     │
+│  │ JSON result       │  │ list display     │                     │
+│  └──────────────────┘  └──────────────────┘                     │
+└──────────────────────────────────────────────────────────────────┘
 ```
+
+### Data Flow (End-to-End)
+1. App starts → Host spawns all backend plugins, notes frontend files
+2. WebView loads → App.tsx mounts
+3. App.tsx calls `getPluginManifests` → gets array of all manifests
+4. For each manifest with `frontendComponent`:
+   - Call `getPluginFrontend(name)` → returns JS code as string
+   - Create `<script>` element, set `textContent` = code, append to `<body>`
+   - Script calls `customElements.define()` → Web Component registered globally
+   - Render `<WebComponentSlot tag={componentName}>` in plugin card → WC mounts
+5. User clicks button in WC → calls `window.__pluginRpc(method, params)`
+6. This calls `pluginRequest` RPC → `routeRequest` → `sendToPlugin`
+7. Plugin reads stdin line, processes request, writes response to stdout
+8. Host reads stdout line, parses JSON, matches by `id`, resolves promise
+9. Result flows back through RPC → `window.__pluginRpc` returns → WC re-renders
 
 ---
 
-## File Structure
+## File Structure (ACCURATE — matches code on disk as of June 2026)
 
 ```
 /mnt/5TB/Projects/electro-plugins/
-├── AGENTS.md                        ← THIS FILE
-├── config.json                      # Plugin list (temporary — will be replaced by manifest scan)
-├── electrobun.config.ts             # Electrobun build configuration
-├── vite.config.ts                   # Vite config (React plugin, port 5173, root at src/mainview)
-├── package.json                     # Dependencies
-├── tsconfig.json                    # TypeScript strict mode, noUnusedLocals, noUnusedParameters
+├── AGENTS.md                        ← THIS FILE (update every session!)
+├── electrobun.config.ts             # Build config (copy rules commented out in dev)
+├── vite.config.ts                   # Vite: React plugin, port 5173, root at src/mainview
+├── package.json                     # Dependencies + scripts
+│   ├─ "start": "bun run build:plugins && vite build && electrobun dev"
+│   ├─ "dev": "electrobun dev --watch"
+│   ├─ "dev:hmr": "concurrently \"bun run hmr\" \"bun run start\""
+│   ├─ "hmr": "vite --port 5173"
+│   ├─ "build:plugins": "bun scripts/build-plugins.js"
+│   └─ Deps: electrobun 1.18.1, react 18, preact 10, vue 3, vite 6
+├── tsconfig.json                    # TypeScript strict mode
 ├── postcss.config.js                # PostCSS with Tailwind + autoprefixer
-├── tailwind.config.js               # Tailwind content path: src/mainview/**/*
+├── tailwind.config.js               # Tailwind content: src/mainview/**/*
 ├── bun.lock                         # Bun lock file
 ├── .gitignore                       # node_modules/, build/, dist/, artifacts/, greet binary, *.log
-├── test.sh                          # Standalone plugin smoke test (bash)
+│
+├── scripts/
+│   └── build-plugins.js             # Centralized plugin frontend build (48 lines)
+│       - Scans plugins/*/frontend/ for .jsx → esbuild --bundle
+│       - Scans plugins/*/frontend/ for .vue → Vite build (IIFE format)
+│       - Run: "bun run build:plugins" or auto-runs in "bun run start"
 │
 ├── src/
 │   ├── bun/
-│   │   └── index.ts                 # HOST: ~220 lines
-│   │       - Types: PluginConfig, PendingRequest, PluginInstance
-│   │       - sendToPlugin(): writes JSON to plugin stdin
-│   │       - handlePluginResponse(): parses stdout, matches by id, resolves/rejects promises
+│   │   └── index.ts                 # HOST (~272 lines)
+│   │       - Types: PendingRequest, PluginInstance
+│   │       - findProjectRoot(): walks up from import.meta.dir to find package.json
+│   │       - resolvePath(): makes relative paths absolute for Bun.spawn args
+│   │       - Manifest scanning: readdirSync(plugins/*/plugin.json) → JSON.parse
+│   │       - Plugin spawning: Bun.spawn(), push to array, start readers
+│   │       - sendToPlugin(): stdin.write() (FileSink, not getWriter)
+│   │       - handlePluginResponse(): JSON.parse → match by id → resolve/reject → delete
 │   │       - readStdout(): async reader, buffers partial lines across chunks
-│   │       - readStderr(): same pattern, logs stderr
-│   │       - Plugin spawning loop: Bun.spawn(), push to array, start readers
-│   │       - routeRequest(): method prefix match → Promise with 10s timeout
-│   │       - RPC handlers: pluginRequest (route + return), pluginList (return status)
+│   │       - readStderr(): same pattern, logs to console
+│   │       - routeRequest(): method prefix match → Promise with 10-second timeout
+│   │       - 4 RPC handlers: pluginRequest, pluginList, getPluginManifests, getPluginFrontend
+│   │       - All params typed as unknown, cast internally (Electrobun defineRPC requirement)
 │   │       - getMainViewUrl(): checks Vite HMR on port 5173, falls back to bundled
-│   │       - BrowserWindow creation, health check interval, SIGINT cleanup
+│   │       - BrowserWindow creation, health check interval (5s), SIGINT cleanup
 │   │
 │   ├── mainview/
-│   │   ├── App.tsx                  # FRONTEND: ~88 lines
-│   │   │   - Electroview RPC bridge
-│   │   │   - Plugin card list (name + alive/dead badge + method buttons)
+│   │   ├── App.tsx                  # FRONTEND (~152 lines)
+│   │   │   - Electroview RPC bridge from electrobun/view
+│   │   │   - window.__pluginRpc() global bridge for Web Components
+│   │   │   - Auto-loads all plugin frontends on mount (getPluginFrontend → inject <script>)
+│   │   │   - WebComponentSlot(): creates <tag> element inside <div> for each WC
+│   │   │   - Plugin card list (name + desc + alive/dead badge + method buttons)
 │   │   │   - callMethod() → pluginRequest RPC → display JSON result
-│   │   │   - Result box (preformatted JSON)
+│   │   │   - Result box (preformatted JSON in <pre>)
 │   │   ├── main.tsx                 # React entry point (StrictMode, createRoot)
 │   │   ├── index.html               # HTML shell (<div id="root"> + <script>)
 │   │   └── index.css                # @tailwind base/components/utilities
 │   │
 │   └── shared/
-│       └── types.ts                 # SHARED TYPES:
+│       └── types.ts                 # SHARED TYPES (29 lines):
 │           - PluginInfo { name, alive, methods }
-│           - PluginRequestParams { method, params }
+│           - PluginRequestParams { method, params: any }
 │           - PluginRequestResults { success, data?, error? }
+│           - PluginManifest { name, version, description, author,
+│               command?, args?, methods?, frontendComponent?,
+│               frontendFile?, frontendSlot? }
 │
 ├── plugins/
 │   ├── greet-go/
-│   │   ├── main.go                  # Go plugin: ~78 lines
-│   │   │   - Request struct with *json.RawMessage params
-│   │   │   - Response struct with interface{} result
+│   │   ├── plugin.json              # Flat manifest (12 lines)
+│   │   │   - name: "greet", command: "./plugins/greet-go/greet"
+│   │   │   - methods: ["greet.hello", "greet.bye"]
+│   │   │   - frontendComponent: "greet-widget"
+│   │   │   - frontendFile: "plugins/greet-go/frontend/greet-widget.js"
+│   │   ├── main.go                  # Go backend (~78 lines)
+│   │   │   - Request/Response structs with *json.RawMessage params
 │   │   │   - stdin/stdout loop via bufio.Scanner
-│   │   │   - Handles: greet.hello (returns greeting), greet.bye (returns farewell)
-│   │   │   - Default name "World" if params empty
+│   │   │   - greet.hello: returns greeting with param name (default "World")
+│   │   │   - greet.bye: returns farewell with param name
 │   │   ├── greet                    # Compiled binary (~2MB, in .gitignore)
-│   │   └── frontend/                # (future: Web Component JS)
+│   │   └── frontend/
+│   │       ├── greet-widget.jsx     # Preact Web Component source (42 lines)
+│   │       │   - Text input + Hello/Bye buttons + JSON result display
+│   │       │   - Calls window.__pluginRpc() for backend communication
+│   │       └── greet-widget.js      # Built output (~139KB, esbuild --bundle)
 │   │
 │   └── logger-py/
-│       ├── main.py                  # Python plugin: ~49 lines
-│       │   - stdin/json loop with flush
-│       │   - Handles: log.info (appends to electro-plugins.log), log.list (reads all lines)
-│       │   - Writes to electro-plugins.log in project root
-│       └── frontend/                # (future: Web Component JS)
+│       ├── plugin.json              # Flat manifest (13 lines)
+│       │   - name: "logger", command: "python3"
+│       │   - args: ["plugins/logger-py/main.py"]
+│       │   - methods: ["log.info", "log.list"]
+│       │   - frontendComponent: "log-viewer"
+│       │   - frontendFile: "plugins/logger-py/frontend/log-viewer.js"
+│       ├── main.py                  # Python backend (~49 lines)
+│       │   - send_response(): JSON + \n to stdout, then flush
+│       │   - handle_request(): dispatches by method
+│       │   - log.info: appends to electro-plugins.log, returns "ok"
+│       │   - log.list: reads all lines from log file, returns array
+│       │   - sys.stdin loop line by line
+│       │   - params.get("params", {}) prevents AttributeError crash
+│       │   - All indentation: 4 spaces (was 6 — fixed in bug #6)
+│       └── frontend/
+│           ├── log-viewer.vue       # Vue SFC source (27 lines)
+│           │   - Refresh button + log entry list + error/loading states
+│           │   - Calls window.__pluginRpc() for backend communication
+│           ├── index.js             # Vue entry glue (8 lines)
+│           │   - Imports .vue, creates Vue app, registers as WC
+│           └── log-viewer.js        # Built output (~99KB, Vite IIFE build)
 │
 ├── build/                           # Electrobun build output (in .gitignore)
 ├── dist/                            # Vite build output (in .gitignore)
 ├── node_modules/                    # (in .gitignore)
-└── electro-plugins.log              # Logger plugin output (in .gitignore)
+└── electro-plugins.log              # Logger plugin output file (in .gitignore)
 ```
 
 ---
@@ -166,29 +320,54 @@ for (const plugin of plugins) {
     }
 }
 ```
-- Host checks method PREFIX only (e.g., `"greet."`)
+- Host checks method PREFIX only (e.g., `"greet."` matches `"greet.hello"` and `"greet.bye"`)
 - The specific action (hello vs bye) is handled by the plugin, NOT the host
-- Adding 100+ plugins requires zero changes to routing code — just add entries to config/manifest
-- Order matters: first matching plugin wins
+- Adding 100+ plugins requires zero changes to routing code
+- Order matters: first matching plugin in the manifests array wins
 
 ---
 
-## Host Behavior (src/bun/index.ts)
+## Host Behavior (src/bun/index.ts — ~272 lines)
 
 ### Startup Sequence
-1. Import Electrobun modules (BrowserWindow, BrowserView, Updater)
-2. Read config.json via `Bun.file("config.json").text()`
-3. For each plugin config:
-   - Spawn with `Bun.spawn([command, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" })`
-   - Store as `PluginInstance { config, process, alive: true }`
-   - Start async `readStdout()` loop
-   - Start async `readStderr()` loop
-   - Set up `proc.exited.then()` to mark `alive = false`
-4. Define RPC handlers via `BrowserView.defineRPC()`
-5. Detect dev server URL (Vite HMR on port 5173)
-6. Create `new BrowserWindow()` with the rpc object
-7. Start health check interval (5 seconds)
-8. Set up SIGINT cleanup handler
+1. Import modules: `BrowserWindow, BrowserView, Updater` from electrobun/bun; `readdirSync, existsSync` from fs; `join` from path; `Subprocess` from bun; `PluginManifest` from shared/types
+2. `findProjectRoot(import.meta.dir)` — walks up directory tree until `package.json` found. Works in both dev (flat source files) and production builds (bundled).
+3. `baseDir = findProjectRoot(...)` — store the project root absolute path
+4. `readdirSync(join(baseDir, "plugins"))` — list all directories in plugins/
+5. `filter(name => existsSync(plugin.json))` — keep only directories with a manifest
+6. For each matching dir: `Bun.file(...).text()` → `JSON.parse()` → push to `manifests[]`
+7. For each manifest with a `"command"` field:
+   a. `resolvePath(command)` — if relative (starts with "." or contains "/"), join with baseDir; if absolute, use as-is; if bare name (e.g., "bun", "python3"), return unmodified (looks up in PATH)
+   b. `resolvePath(args[])` — same logic for each arg
+   c. `Bun.spawn([command, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" })`
+   d. Store as `PluginInstance { config: manifest, process: proc, alive: true }`
+   e. Start async `readStdout(plugin)` — reads stdout lines in background
+   f. Start async `readStderr(plugin)` — reads stderr lines in background
+   g. `proc.exited.then(code => { plugin.alive = false })` — marks dead on exit
+8. Define RPC handlers via `BrowserView.defineRPC()` — 4 request handlers (see RPC table below)
+9. `getMainViewUrl()` — checks Vite HMR on port 5173, returns dev URL if available, else bundled HTML
+10. `new BrowserWindow({ title, url, frame, rpc })` — create the app window
+11. `setInterval()` — health check every 5 seconds (logs dead plugins, no auto-restart)
+12. `process.on("SIGINT", ...)` — kill all plugin subprocesses on Ctrl+C
+
+### RPC Handlers (exposed to WebView)
+
+All handlers are defined inside `BrowserView.defineRPC()` under `handlers.requests`.
+Parameters are typed as `unknown` and cast internally because Electrobun's defineRPC
+requires `(params?: unknown) => unknown`.
+
+| Handler | Params | Returns |
+|---------|--------|---------|
+| `pluginRequest` | `{ method: string, params: any }` | `{ success: boolean, data?: any, error?: string }` |
+| `pluginList` | `{}` (ignored) | `[{ name: string, alive: boolean, methods: string[] }]` |
+| `getPluginManifests` | `{}` (ignored) | `[{ name, version, description, author, methods, frontendComponent, frontendSlot }]` |
+| `getPluginFrontend` | `{ name: string }` | `{ code: string }` (full JS file text) |
+
+**getPluginFrontend details:**
+- Finds manifest by `name` in the manifests array
+- Reads the file at `join(baseDir, manifest.frontendFile)` using `Bun.file().text()`
+- Returns the raw JS code as a string
+- WebView injects this into a `<script>` tag to register the Web Component
 
 ### stdout Reader (readStdout)
 - Uses Web Streams API: `plugin.process.stdout.getReader()`
@@ -205,10 +384,6 @@ for (const plugin of plugins) {
 6. If `msg.error` exists → `pending.reject(new Error(msg.error))`
 7. Else → `pending.resolve(msg.result)`
 
-### RPC Handlers (exposed to WebView)
-- `pluginRequest({ method, params })` → calls `routeRequest(method, params)`, returns `{ success: true, data }` or `{ success: false, error: message }`
-- `pluginList()` → returns array of `{ name, alive, methods }` for all plugins
-
 ### Health Check
 - `setInterval()` every 5000ms
 - Checks `plugin.alive` for each plugin
@@ -219,63 +394,299 @@ for (const plugin of plugins) {
 
 ---
 
-## Frontend Behavior (src/mainview/App.tsx)
+## Frontend Behavior (src/mainview/App.tsx — ~152 lines)
 
-### Setup
-- Creates an `Electroview` instance (Electrobun's browser-side RPC bridge)
-- No browser-side request/message handlers needed (the WebView only CALLS the host, doesn't RECEIVE calls)
+### Imports & Setup
+- `useState, useEffect, useRef` from React (state, lifecycle, DOM references)
+- `Electroview` from electrobun/view (Electrobun's browser-side RPC bridge)
+- Type imports: `PluginInfo`, `PluginManifest` from shared/types
 
-### On Mount
-- `useEffect(() => { loadPlugins() }, [])` runs once
-- `loadPlugins()` calls `electroview.rpc.request.pluginList({})`
-- Stores result in `plugins` state array
+### Global Bridge (module-level, outside App component)
+```typescript
+window.__pluginRpc = async (method: string, params: any) => {
+  const res = await electroview.rpc?.request.pluginRequest({ method, params })
+  return res.data
+}
+```
+- Any Web Component can call `window.__pluginRpc(method, params)` without importing Electrobun
+- Extracts `.data` from the `{ success, data, error }` response envelope
+
+### WebComponentSlot (Helper Component)
+```typescript
+function WebComponentSlot({ tag }: { tag: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!ref.current) return;
+    ref.current.innerHTML = "";
+    const el = document.createElement(tag);
+    ref.current.appendChild(el);
+  }, [tag]);
+  return <div ref={ref} />;
+}
+```
+- Takes a `tag` prop (e.g., `"greet-widget"`)
+- Creates a DOM element with that tag name inside a `<div>`
+- If the WC was already registered via `customElements.define()`, the browser auto-instantiates it
+- Clears previous content before mounting (prevents duplicates on re-render)
+
+### App Component — State
+- `manifests` — array of `PluginManifest` from `getPluginManifests` RPC
+- `plugins` — array of `PluginInfo` from `pluginList` RPC (alive/dead status)
+- `result` — JSON string to display in the result box
+- `loading` — currently loading method (disables buttons while in progress)
+- `loadedPlugins` — `Set<string>` tracking which frontends have been injected (prevents double-loading)
+
+### On Mount — Two Effects
+
+**Effect 1: Load manifests and plugin status**
+```typescript
+useEffect(() => { loadManifests(); loadPlugins() }, [])
+```
+Runs once when App mounts. Fetches both manifest data and alive/dead status.
+
+**Effect 2: Auto-load all frontend Web Components**
+```typescript
+useEffect(() => {
+  if (manifests.length === 0) return
+  loadAllFrontends()
+}, [manifests])
+```
+Runs when `manifests` state array is populated. For each manifest with a `frontendComponent`:
+1. Skip if already loaded (checked via `loadedPlugins` Set)
+2. Call `getPluginFrontend({ name })` → get JS code string
+3. Create `<script>` element, set `textContent` = code
+4. Append to `<body>` → browser executes script → `customElements.define()` called
+5. Any `<tag-name>` elements on the page now render the WC
 
 ### Plugin Cards
-- Each plugin rendered as a white card with rounded corners and shadow
-- Left side: plugin name (indigo heading)
-- Right side: status badge — green `● Alive` or red `● Dead` (changes dynamically based on `alive` boolean)
-- Below: method buttons — one button per method prefix (e.g., `greet.`, `log.`)
-- All buttons disabled while any request is loading (`loading !== null`)
+- Rendered from `plugins.map()` — one card per plugin
+- Top bar: plugin name (heading) + description + version + alive/dead badge
+- Badge: green `● Alive` or red `● Dead` (conditional CSS classes)
+- Method buttons: one per method name (e.g., "greet.hello", "log.list")
+- All buttons disabled while `loading !== null`
+- Below buttons: if manifest has `frontendComponent`, render `<WebComponentSlot tag={...} />`
 
-### Calling a Plugin
+### Calling a Plugin (from host method buttons)
 1. Click a method button → `callMethod(method)`
-2. Sets `loading` to the method name (disables all buttons)
-3. Clears previous result
-4. Calls `electroview.rpc.request.pluginRequest({ method, params: {} })`
-5. Format result: `JSON.stringify(res, null, 2)` (2-space indent)
-6. Display in a `<pre>` block (preserves whitespace)
-7. On error: display error message
-8. `finally { setLoading(null) }` — re-enable buttons
+2. Sets `loading` to method name (disables all buttons)
+3. Calls `electroview.rpc.request.pluginRequest({ method, params: {} })`
+4. On success: `JSON.stringify(res, null, 2)` → display in `<pre>` result box
+5. On error: display error message
+6. `finally { setLoading(null) }` — re-enable buttons
 
 ### Result Box
-- Only shown when `result` is not empty string
-- Uses short-circuit: `{result && (<div>...{result}...</div>)}`
-- Pre-formatted JSON in a light gray `<pre>` block with horizontal scroll
+- Only visible when `result !== ""`
+- Uses short-circuit `{result && (<div>...<pre>{result}</pre>...</div>)}`
+- Pre-formatted JSON in a gray `<pre>` block with `overflow-x-auto` (horizontal scroll)
+
+---
+
+## Build System
+
+`scripts/build-plugins.js` (48 lines) — centralized build for all plugin frontends.
+
+### How It Works
+1. Scans `plugins/*/frontend/` directories via `readdirSync`
+2. For each directory with files:
+   - **.jsx files** → `esbuild <input> --bundle --outfile=<output>`
+     - Used by Preact/React plugins
+     - Inlines all dependencies (framework, JSX runtime, etc.)
+     - Output: single self-contained .js file
+   - **.vue files** (must have companion `index.js` entry) → Vite build
+     - Generates a temporary `.vite.config.mjs` with:
+       - `root`: plugin frontend directory
+       - `build.lib.entry`: `"index.js"` (the entry glue)
+       - `build.lib.formats: ["iife"]` (Immediately Invoked Function Expression)
+       - `build.outDir: "."` (output in same directory as source)
+       - `build.emptyOutDir: false` (don't delete other files)
+     - Runs `npx vite build --config <configFile>`
+     - Deletes the temp config file
+3. Output file: `<name>.js` in the same frontend/ directory (e.g., `greet-widget.js`, `log-viewer.js`)
+
+### Run Commands
+```bash
+bun run build:plugins          # Build all plugin frontends
+bun run start                  # build:plugins + vite build + electrobun dev
+```
+
+### Framework Handling
+| Framework | Source Ext | Build Tool | Bundle Size | Notes |
+|-----------|-----------|------------|-------------|-------|
+| Preact | .jsx | esbuild --bundle | ~3KB + plugin code | Tiny, React-compatible API |
+| React | .jsx | esbuild --bundle | ~40KB + plugin code | Larger but more ecosystem |
+| Vue | .vue + index.js | Vite IIFE | ~35KB + plugin code | Requires @vitejs/plugin-vue |
+| Svelte/Solid | Similar approach | Respective bundler | Varies | Same WC output pattern |
+
+"Works forever" principle: framework code is inlined into the plugin's .js file.
+The plugin never depends on what version of React/Vue/Preact the host app uses.
+
+---
+
+## Plugin Manifest Schema (Current — Flat Format)
+
+```json
+{
+  "name": "greet",
+  "version": "1.0.0",
+  "description": "Friendly greetings in Go",
+  "author": "Community",
+  "command": "./plugins/greet-go/greet",
+  "args": [],
+  "methods": ["greet.hello", "greet.bye"],
+  "frontendComponent": "greet-widget",
+  "frontendFile": "plugins/greet-go/frontend/greet-widget.js",
+  "frontendSlot": "main"
+}
+```
+
+### Fields
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `name` | ✅ | string | Unique identifier. Used in RPC (e.g., getPluginFrontend), displayed as card title |
+| `version` | ✅ | string | Semver version (e.g., "1.0.0"). Displayed in card header |
+| `description` | ✅ | string | Short description. Displayed in card header |
+| `author` | ✅ | string | Creator name. Displayed in card header |
+| `command` | ❌ | string | Executable path. Absolute, relative to project root, or bare name in PATH (e.g., "bun", "python3"). Omit for frontend-only plugins |
+| `args` | ❌ | string[] | Arguments to pass to command. Paths resolved relative to project root via `resolvePath()` |
+| `methods` | ❌ | string[] | Array of exact method names (e.g., `["greet.hello", "greet.bye"]`). Used for routing AND displayed as buttons in the plugin card |
+| `frontendComponent` | ❌ | string | HTML tag name for custom element (e.g., `"greet-widget"` → `<greet-widget>`). Must match the name passed to `customElements.define()` |
+| `frontendFile` | ❌ | string | Path to built Web Component .js file (relative to project root). Read by `getPluginFrontend` RPC |
+| `frontendSlot` | ❌ | string | Where in the UI this WC appears. Currently only `"main"` is supported. Future: `sidebar`, `header`, `statusbar`, `settings` |
+
+### Plugin Types (Determined by Fields Present)
+- **Backend-only**: Has `command` but no `frontend*` fields → spawned as subprocess, no UI
+- **Frontend-only**: Has `frontendComponent`/`frontendFile` but no `command` → loaded as WC, no subprocess
+- **Fullstack**: Has BOTH → spawned as subprocess AND WC auto-loaded in plugin card
 
 ---
 
 ## Plugin Implementations
 
-### greet-go (main.go) — Go
+### greet-go — Go Backend + Preact Frontend
+
+#### Backend (main.go — ~78 lines)
 - Uses `*json.RawMessage` for params (user's explicit choice over simpler `map[string]interface{}`)
+  - Provides more type safety (each method defines its own params struct)
+  - More verbose: requires intermediate struct definition + unmarshal per method
 - Request struct: `Id int`, `Method string`, `Params *json.RawMessage`
 - Response struct: `Id int`, `Result interface{}`, `Error string`
+- stdin/stdout loop via `bufio.Scanner`
 - Method handlers for `greet.hello` and `greet.bye`
 - Both accept `{ name: string }` param, default to "World" if empty
 - `greet.hello` returns `{ message: "Hello <name> from Go!" }`
 - `greet.bye` returns `{ message: "Goodbye <name>!" }`
 - Unknown methods return `{ error: "Method not found: ..." }`
 - Compile: `go build -o greet main.go` in the greet-go directory
+- Test standalone: `echo '{"id":1,"method":"greet.hello","params":{"name":"Niri"}}' | ./plugins/greet-go/greet`
 
-### logger-py (main.py) — Python
+#### Frontend (greet-widget.jsx — 42 lines) — Preact Web Component
+```jsx
+import { useState } from "preact/hooks"
+import { render } from "preact"
+
+function GreetUI() {
+  const [name, setName] = useState("World")
+  const [result, setResult] = useState(null)
+
+  async function call(method) {
+    setResult("Loading...")
+    try {
+      const res = await window.__pluginRpc(method, { name })
+      setResult(res)
+    } catch (e) {
+      setResult({ error: e.message })
+    }
+  }
+
+  return (
+    <div>
+      <input type="text" value={name} onInput={e => setName(e.target.value)} />
+      <button onClick={() => call("greet.hello")}>Hello</button>
+      <button onClick={() => call("greet.bye")}>Bye</button>
+      {result && <pre>{JSON.stringify(result, null, 2)}</pre>}
+    </div>
+  )
+}
+
+class GreetWidget extends HTMLElement {
+  connectedCallback() { this.root = render(<GreetUI />, this) }
+  disconnectedCallback() { render(null, this) }
+}
+customElements.define("greet-widget", GreetWidget)
+```
+- Uses Preact (3KB React-like library with same API). Full Preact inlined into bundle by esbuild.
+- Text input bound to `name` state via `useState`
+- Hello/Bye buttons call `window.__pluginRpc(method, { name })` and display JSON result
+- `GreetWidget` extends `HTMLElement` — the browser standard for custom elements
+- `connectedCallback()` — lifecycle hook called when element is added to the DOM. Renders Preact inside the element.
+- `disconnectedCallback()` — lifecycle hook called when element is removed. Cleans up Preact render.
+- `customElements.define("greet-widget", GreetWidget)` — registers the element globally
+- Built by esbuild: `esbuild greet-widget.jsx --bundle --outfile=greet-widget.js`
+- Output: ~139KB (includes Preact + dependencies, all self-contained in a single file)
+
+### logger-py — Python Backend + Vue Frontend
+
+#### Backend (main.py — ~49 lines)
 - `send_response(req_id, result, error)` — writes JSON + `\n` to stdout, then flushes
 - `handle_request(request)` — dispatches by method
 - `log.info` — reads `params.message`, appends to `electro-plugins.log` (append mode), returns `"ok"`
 - `log.list` — reads all lines from `electro-plugins.log`, returns array of strings
-- Unknown methods return error
-- Main loop: reads `sys.stdin` line by line
-- `params.get("params", {})` — default empty object prevents AttributeError crash
-- All indentation is 4 spaces (the file previously had 6-space indentation on some lines — must be consistently 4 or 8)
+- Unknown methods return `{ error: "Method not found: ..." }`
+- Main loop: reads `sys.stdin` line by line via `for line in sys.stdin:`
+- `params.get("params", {})` — default empty object prevents `AttributeError` crash
+- All indentation is 4 spaces (was 6 at one point — fixed in bug #6)
+- Test standalone: `echo '{"id":1,"method":"log.info","params":{"message":"test"}}' | python3 plugins/logger-py/main.py`
+
+#### Frontend (log-viewer.vue — 27 lines + index.js — 8 lines) — Vue Web Component
+**log-viewer.vue:**
+```vue
+<template>
+  <div>
+    <button @click="refresh">Refresh</button>
+    <p v-if="entries === null">Click Refresh to load logs.</p>
+    <ul v-else-if="Array.isArray(entries)">
+      <li v-if="entries.length === 0">No log entries yet.</li>
+      <li v-for="(e, i) in entries" :key="i">{{ e }}</li>
+    </ul>
+    <pre v-else>{{ typeof entries === 'string' ? entries : JSON.stringify(entries, null, 2) }}</pre>
+  </div>
+</template>
+
+<script setup>
+import { ref } from "vue"
+const entries = ref(null)
+async function refresh() {
+  entries.value = "Loading..."
+  try {
+    const res = await window.__pluginRpc("log.list", {})
+    entries.value = res.data || res
+  } catch (e) {
+    entries.value = [{ error: e.message }]
+  }
+}
+</script>
+```
+- Single File Component (SFC) — `<template>` for HTML + `<script setup>` for logic
+- Refresh button calls `window.__pluginRpc("log.list", {})` to fetch log entries
+- Shows entries as `<ul><li>` list
+- Handles all states: null (initial), empty array, array with entries, loading string, error objects
+- Uses `v-if`/`v-else-if`/`v-else` chain for conditional rendering
+
+**index.js (entry glue):**
+```javascript
+import { createApp } from "vue"
+import LogViewer from "./log-viewer.vue"
+customElements.define("log-viewer", class extends HTMLElement {
+  connectedCallback() { createApp(LogViewer).mount(this) }
+})
+```
+- Imports the Vue component
+- Defines a Web Component class that mounts a fresh Vue app on `connectedCallback()`
+- `createApp(LogViewer)` — creates a new Vue application instance
+- `.mount(this)` — mounts the Vue app into the custom element as its host
+
+**Build:** Vite generates a temp config, runs `npx vite build`, deletes the config.
+Output: ~99KB (IIFE format, includes Vue runtime, all self-contained).
 
 ---
 
@@ -291,74 +702,79 @@ for (const plugin of plugins) {
 7. **Everything is a plugin** — including frontend UI and eventually the skeleton itself
 8. **No "core" plugin** — just feature plugins (no separate plugin for core system functionality)
 9. **Companion app** (future) — a tiny binary that reads config and launches the right skeleton for the platform
+10. **Manifest scanning from plugins/*/plugin.json** — replaced config.json. Host reads all plugin.json files at startup via readdirSync + JSON.parse. No central config needed.
+11. **Flat manifest format** — no nested backend/frontend objects. All fields at top level. Matches VS Code/Chrome/Obsidian conventions.
 
 ### Framework Decisions
-10. **Electrobun for prototyping** — easiest for a beginner (Bun/TypeScript). Native WebView, ~14MB bundle, fast startup
-11. **Tauri for future mobile** — Rust, mature ecosystem, iOS + Android support, but requires learning Rust
-12. **zero-native** (Vercel Labs) — alternative future option. Zig + system WebView, mobile support, but pre-release (v0.2)
-13. **WebUI (webui-dev)** — interesting but no mobile path. Opens a real browser (Chrome/Firefox), not a WebView. Few KB library
-14. **React + Tailwind + Vite** for the frontend (from the Electrobun template)
+12. **Electrobun for prototyping** — easiest for a beginner (Bun/TypeScript). Native WebView, ~14MB bundle, fast startup
+13. **Tauri for future mobile** — Rust, mature ecosystem, iOS + Android support, but requires learning Rust
+14. **zero-native** (Vercel Labs) — alternative future option. Zig + system WebView, mobile support, but pre-release (v0.2)
+15. **WebUI (webui-dev)** — interesting but no mobile path. Opens a real browser (Chrome/Firefox), not a WebView. Few KB library
+16. **React + Tailwind + Vite** for the frontend (from the Electrobun template)
 
 ### Plugin Design Decisions
-15. **Manual config.json for now** — simple list of plugins. Will be replaced by manifest scan
-16. **Auto-discovery from plugin.json manifests** (future) — scan `plugins/*/plugin.json` at startup
-17. **Community plugin store** (future) — hosted registry where users browse and install plugins
-18. **Plugin signing / code signing** (future) — verify downloads haven't been tampered with
-19. **Web Components for frontend plugins** — any framework (React, Vue, Svelte, Angular) can compile to them. Browser standard, no framework lock-in
-20. **Iframes as alternative** — stronger isolation, separate JS context, communication via postMessage. Heavier. Cannot display native UI (Qt/GTK)
-21. **Three plugin types** — `backend` (subprocess only), `frontend` (Web Component only), `fullstack` (both)
+17. **Web Components for frontend plugins** — any framework (React, Vue, Svelte, Angular) can compile to them. Browser standard, no framework lock-in
+18. **Iframes as alternative** — stronger isolation, separate JS context, communication via postMessage. Heavier. Cannot display native UI (Qt/GTK)
+19. **Three plugin types** — `backend` (subprocess only), `frontend` (Web Component only), `fullstack` (both)
+20. **`window.__pluginRpc()` global bridge** — simplest way for any WC framework to call backend. No imports needed.
+21. **Centralized build script** — `scripts/build-plugins.js` handles all plugin types. One command for all.
+22. **`findProjectRoot()` walks up from `import.meta.dir`** — works in both dev (flat) and bundled modes
+23. **FileSink.write() for plugin stdin** — Bun's `Subprocess.stdin` is a `FileSink` when piped. Use `.write()` directly.
+24. **RPC params typed as `unknown`** — Electrobun's `defineRPC` expects `(params?: unknown) => unknown`. All handlers cast internally.
 
 ### Go Plugin Specific
-22. **`*json.RawMessage` for params** — user explicitly chose this over simpler `map[string]interface{}`. Provides more type safety but more verbose
-23. **Nested struct for params** — each method defines its own params struct, unmarshals from RawMessage
+25. **`*json.RawMessage` for params** — user explicitly chose this over simpler `map[string]interface{}`. More type safety, more verbose.
+26. **Nested struct for params** — each method defines its own params struct, unmarshals from RawMessage
 
 ### Teaching/Communication Decisions
-24. **User is a beginner** — assume ZERO prior knowledge. Explain every concept, syntax, and line
-25. **Provide full code in messages** — user copies code themselves. Never modify files without explicit permission
-26. **Line-by-line explanation tables** — after every code block, explain each line in a table
-27. **Multi-level zoom** — big picture → file → scope/block → line → symbol → syntax construct
-28. **Be proactive** — research tools, patterns, pitfalls without being asked. Suggest better approaches
-29. **Mentor, not yes-man** — correct wrong assumptions directly. Lead the project in the right direction
-30. **Test standalone before integrating** — catch plugin bugs in isolation before running the full app
-31. **No code comments unless asked** — don't add comments to code files
-32. **Plan mode = read-only, Build mode = can write** — plan mode explains and provides code in messages, build mode can create/edit files + run commands
-33. **Never commit unless asked** — no git operations without explicit instruction
+27. **User is a beginner** — assume ZERO prior knowledge. Explain every concept, syntax, and line
+28. **Provide full code in messages** — user copies code themselves. Never modify files without explicit permission
+29. **Line-by-line explanation tables** — after every code block, explain each section in a table
+30. **Multi-level zoom** — big picture → file → scope/block → line → symbol → syntax construct
+31. **Be proactive** — research tools, patterns, pitfalls without being asked. Suggest better approaches
+32. **Mentor, not yes-man** — correct wrong assumptions directly. Lead the project in the right direction
+33. **Test standalone before integrating** — catch plugin bugs in isolation before running the full app
+34. **No code comments unless asked** — don't add comments to code files
+35. **Plan mode = read-only, Build mode = can write** — plan mode explains and provides code in messages, build mode can create/edit files + run commands
+36. **Never commit unless asked** — no git operations without explicit instruction
+37. **Two-file rule** — only modify AGENTS.md (project knowledge) and SKILL.md (general rules). Never touch project code.
+38. **Update both files every prompt** — actively check for changes. Never assume "last agent handled it."
 
 ---
 
 ## Bug History
 
 ### Bug #1: `for...in` instead of `for...of` (stdout reader)
-- **Location**: `readStdout()` line 75, `readStderr()` line 95
+- **Location**: `readStdout()` and `readStderr()` in index.ts
 - **Problem**: `for (const line in lines)` iterates over array INDICES as strings ("0", "1"), not actual line values
 - **Fix**: Change to `for (const line of lines)`
 - **Impact**: Plugin responses silently dropped. `JSON.parse("0")` returns `0`, then `0.id != null` is false, so every request times out after 10 seconds
 - **Status**: ✅ FIXED
 
 ### Bug #2: `==` instead of `=` (alive flag)
-- **Location**: `proc.exited.then()` callback, line 119
+- **Location**: `proc.exited.then()` callback
 - **Problem**: `plugin.alive == false` is a comparison, not an assignment. The expression evaluates to `true` or `false` but the value is discarded. `alive` is never set to false
 - **Fix**: Change `==` to `=`
 - **Impact**: When a plugin crashes, the health check never detects it. Plugin stays marked as alive forever
 - **Status**: ✅ FIXED
 
 ### Bug #3: Extra `}` in template literal
-- **Location**: Console error message in exit handler, line 120
+- **Location**: Console error message in exit handler
 - **Problem**: `` `[${pc.name}] exited (code ${code}})` `` — extra `}` after `${code}`
 - **Fix**: Remove the extra `}`
 - **Impact**: Output shows `"exited (code 0})"` instead of `"exited (code 0)"`
 - **Status**: ✅ FIXED
 
 ### Bug #4: Missing `pendingRequests.delete()`
-- **Location**: `handlePluginResponse()`, after line 51
+- **Location**: `handlePluginResponse()` in index.ts
 - **Problem**: After resolving/rejecting a pending request, the entry stays in the Map forever
 - **Fix**: Add `pendingRequests.delete(msg.id)` after `clearTimeout(pending.timer)`
-- **Impact**: Memory leak. Over time, the Map fills with resolved requests. Multiply by number of requests made
+- **Impact**: Memory leak. Over time, the Map fills with resolved requests
 - **Status**: ✅ FIXED
 
 ### Bug #5 (Frontend): `pluginList` instead of `pluginRequest`
-- **Location**: App.tsx, `callMethod()` function, line 28
-- **Problem**: `electroview.rpc?.request.pluginList({ method, params })` calls the wrong RPC method. `pluginList` returns plugin status list, not plugin execution result
+- **Location**: App.tsx, `callMethod()` function
+- **Problem**: `electroview.rpc?.request.pluginList({ method, params })` calls the wrong RPC method
 - **Fix**: Change to `electroview.rpc.request.pluginRequest({ method, params })` and remove unnecessary `?.`
 - **Impact**: Clicking a method button shows the plugin list instead of calling the plugin
 - **Status**: ✅ FIXED
@@ -366,13 +782,41 @@ for (const plugin of plugins) {
 ### Bug #6 (Python): Inconsistent indentation
 - **Location**: `logger-py/main.py`, lines 11 and 13
 - **Problem**: 6 spaces of indentation instead of 8 (Python requires consistent indentation level for if/else bodies)
-- **Fix**: Change from 6 spaces to 8 spaces to match Python indentation rules (4 for function body + 4 for if/else body)
+- **Fix**: Change from 6 spaces to 8 spaces (4 for function body + 4 for if/else body)
 - **Status**: ✅ FIXED
 
 ### Bug #7 (Python): Missing default for `params.get()`
 - **Location**: `logger-py/main.py`, line 20
-- **Problem**: `params = request.get("params")` — if the request has no "params" key, `params` becomes `None`. Then `params.get("message", "")` on line 24 crashes with `AttributeError: 'NoneType' object has no attribute 'get'`
+- **Problem**: `params = request.get("params")` — if the request has no "params" key, `params` becomes `None`. Then `params.get("message", "")` crashes with `AttributeError: 'NoneType' object has no attribute 'get'`
 - **Fix**: `params = request.get("params", {})` — default to empty dict
+- **Status**: ✅ FIXED
+
+### Bug #8: Vite outDir doubled path
+- **Location**: Generated `.vite.config.mjs` in `build-plugins.js`
+- **Problem**: Setting `root` to plugin dir AND `build.outDir` relative to root caused path like `plugins/logger-py/frontend/plugins/logger-py/frontend/`
+- **Fix**: Set `build.outDir` to `"."` (current directory = root) and `emptyOutDir: false`
+- **Impact**: Vite build failed for Vue plugins — couldn't find output directory
+- **Status**: ✅ FIXED
+
+### Bug #9: Electrobun build.copy "plugins/**" doesn't work in dev mode
+- **Location**: `electrobun.config.ts` copy rules
+- **Problem**: The glob `"plugins/**"` in `build.copy` only works during production build. In dev mode, the copy step is skipped.
+- **Fix**: Harmless — `resolvePath()` resolves files from source tree directly in dev mode
+- **Impact**: None (works correctly, just different resolution paths per mode)
+- **Status**: ✅ NO FIX NEEDED
+
+### Bug #10: Subprocess.stdin is a FileSink, not WritableStream
+- **Location**: `sendToPlugin()` in index.ts
+- **Problem**: Bun's `Subprocess.stdin` when piped returns a `FileSink`, not a `WritableStream`. Calling `.getWriter()` on it fails: "FileSink doesn't have getWriter"
+- **Fix**: Check `typeof stdin !== "number"`, then call `stdin.write(msg)` directly. No `getWriter()`/`releaseLock()`.
+- **Impact**: Plugin requests silently failed to send. Plugin never received request, so every request timed out.
+- **Status**: ✅ FIXED
+
+### Bug #11: RPC handler params type must be `unknown`
+- **Location**: All 4 RPC handler definitions in index.ts
+- **Problem**: Electrobun's `defineRPC()` strictly expects `(params?: unknown) => unknown`. Using specific types causes TypeScript errors.
+- **Fix**: Declare all handlers as `async (params: unknown) => { ... }` and cast internally with `params as { method: string; params: any }`
+- **Impact**: TypeScript compilation errors. App wouldn't build.
 - **Status**: ✅ FIXED
 
 ---
@@ -425,69 +869,84 @@ for (const plugin of plugins) {
 
 ## Progress
 
-### ✅ DONE
+### ✅ DONE — Phase 1 Complete
 - [x] Researched skeleton options: Electrobun, Tauri, WebUI (webui-dev), zero-native
 - [x] Chose Electrobun for prototyping (Bun/TS, easy for beginner)
-- [x] Created plugins/greet-go/main.go — Go plugin (greet.hello, greet.bye, *json.RawMessage)
-- [x] Created plugins/logger-py/main.py — Python plugin (log.info, log.list)
-- [x] Written config.json — plugin list (greet + logger)
+- [x] Created greet-go plugin: Go backend (greet.hello, greet.bye) + Preact WC frontend
+- [x] Created logger-py plugin: Python backend (log.info, log.list) + Vue WC frontend
 - [x] Written .gitignore — node_modules, build, dist, greet binary, *.log
-- [x] Written host src/bun/index.ts — spawn, route, RPC bridge, health check, cleanup (~220 lines)
-- [x] Written frontend src/mainview/App.tsx — plugin cards, call buttons, result display (~88 lines)
-- [x] Written src/shared/types.ts — PluginInfo, PluginRequestParams, PluginRequestResults
-- [x] Written test.sh — standalone plugin smoke test (bash)
-- [x] Fixed all 4 host bugs: for...of, = assignment, template literal, pendingRequests.delete
-- [x] Fixed Python bugs: indentation, params.get() default
-- [x] Fixed frontend bug: pluginList → pluginRequest
-- [x] Updated skill file with teaching/ops instructions
+- [x] Written flat plugin manifests (plugins/*/plugin.json) — replaces old config.json
+- [x] Written host src/bun/index.ts (~272 lines) — spawn, route, 4 RPC handlers, health check, cleanup
+- [x] Written frontend src/mainview/App.tsx (~152 lines) — auto-load WCs, plugin cards, result display
+- [x] Written src/shared/types.ts — PluginManifest, PluginInfo, PluginRequest*
+- [x] Written scripts/build-plugins.js — centralized build: .jsx → esbuild, .vue → Vite
+- [x] `window.__pluginRpc()` global bridge exposed for Web Components
+- [x] WebComponentSlot helper for rendering WCs inside React cards
+- [x] Host manifest scanning (readdirSync + JSON.parse) — no more config.json
+- [x] All 11 bugs fixed
 - [x] Go plugin compiled and tested standalone
 - [x] Python plugin tested standalone
+- [x] App boots and runs end-to-end. `greet.hello` returns "Hello World from Go!"
 - [x] Full architecture documented in AGENTS.md
+- [x] Teaching mode, operational rules, and auto-update protocol documented
 
-### 🔄 IN PROGRESS / PLANNED (Phased)
+### ⚠️ IN PROGRESS — Phase 2: Real API Plugins
+- [ ] Planning the first real API plugin (simple public API → fetch → display data)
+- [ ] Choose API: Dog API (dog.ceo), Pokémon API, Joke API, or Weather API
+- [ ] Create plugin directory + manifest
+- [ ] Write backend — fetch from API, serve via JSON-RPC
+- [ ] Write frontend Web Component — display fetched data with UI
+- [ ] Build and test end-to-end
+- [ ] Show real internet data rendered in the app
 
-**Phase 1: Plugin Manifest + Frontend Web Components**
-- [ ] Add plugin.json manifests to greet and logger plugins
-- [ ] Create greet-widget Web Component (name input + Hello/Bye buttons)
-- [ ] Create log-viewer Web Component (log list with refresh)
-- [ ] Modify host to scan plugins/*/plugin.json instead of config.json
-- [ ] Add getPluginFrontend RPC method to serve frontend JS
-- [ ] Add getPluginManifests RPC method to list installed plugins
-- [ ] Modify App.tsx to load and render Web Components in a plugin slot
-- [ ] Expose window.__pluginRpc() as global bridge for plugins
+### ❌ PLANNED — Future Phases
 
-**Phase 2: Plugin Store UI**
-- [ ] Create plugins/registry.json listing available plugins
-- [ ] Add registryList RPC handler
-- [ ] Add Store tab to App.tsx (shows remote plugins)
-- [ ] Add Installed tab (shows local plugins from manifests)
-- [ ] Wire up "Install" button → calls installPlugin RPC
+**Phase 3: Second API Plugin + Same Media Type**
+- [ ] Add another API plugin producing the same media type
+- [ ] Start designing the unified feed concept
+- [ ] Build a combined feed view for that media type
 
-**Phase 3: Install from URL**
-- [ ] Implement installPlugin(name) — find in registry, fetch zip, extract
-- [ ] Bun fetch + unzip (system command or npm package)
-- [ ] After install: rescan manifests, spawn backend, load frontend
-- [ ] UI updates to show newly installed plugin
+**Phase 4: Media Type Architecture**
+- [ ] Design the category/feed system
+- [ ] Build generalized features for a media type
+- [ ] Plugin registry for feature sharing
 
-**Phase 4: Future**
-- [ ] Hosted remote registry (web server + JSON API)
-- [ ] Plugin signing / verification
+**Phase 5: Plugin Store**
+- [ ] Create plugin registry schema
+- [ ] Add Store tab to App.tsx
+- [ ] Install from URL / one-click install
+- [ ] Plugins registry list RPC handler
+- [ ] UI updates on install
 - [ ] Auto-updates
+- [ ] Plugin signing / verification
+
+**Phase 6: Future / Stretch**
 - [ ] Plugin dependencies
+- [ ] Community submissions system
+- [ ] Hosted remote registry (web server + JSON API)
 - [ ] Plugin store website
-- [ ] Community submissions
 - [ ] Mobile: Tauri or zero-native
+- [ ] More skeletons: WebUI, Tauri, zero-native
 
 ---
 
 ## Relevant Commands
 
 ```bash
-# Run the app
-cd /mnt/5TB/Projects/electro-plugins && bun start
+# Full app start (build plugins + build vite + run electrobun dev)
+cd /mnt/5TB/Projects/electro-plugins && bun run start
 
-# Development with HMR (runs Vite dev server + Electrobun)
+# Build only plugin frontends (.jsx→esbuild, .vue→Vite)
+bun run build:plugins
+
+# Development with HMR (Vite dev server + Electrobun dev)
 bun run dev:hmr
+
+# Vite dev server only (for HMR when electrobun dev is running separately)
+bun run hmr
+
+# Electrobun dev only (no HMR, uses bundled assets)
+bun run dev
 
 # Compile Go plugin
 cd plugins/greet-go && go build -o greet main.go
@@ -500,7 +959,7 @@ echo '{"id":1,"method":"greet.bye","params":{"name":"Niri"}}' | ./plugins/greet-
 echo '{"id":1,"method":"log.info","params":{"message":"test"}}' | python3 plugins/logger-py/main.py
 echo '{"id":2,"method":"log.list"}' | python3 plugins/logger-py/main.py
 
-# Run the standalone test script
+# Run the standalone test script (if test.sh exists)
 ./test.sh
 ```
 
@@ -508,6 +967,13 @@ echo '{"id":2,"method":"log.list"}' | python3 plugins/logger-py/main.py
 
 ## Teaching/Communication Rules (for agents working here)
 
+### The Two-File Rule (ABSOLUTE)
+1. **MODIFY ONLY** `AGENTS.md` (project-specific knowledge) and `~/.config/opencode/skills/coding/SKILL.md` (general coding rules)
+2. **NEVER TOUCH** any other project file — the user handles ALL code
+3. **UPDATE BOTH FILES EVERY PROMPT** — actively check if anything changed. See the "Auto-Update Protocol" in SKILL.md.
+4. **Always verify** — never assume "the last agent already updated this"
+
+### Teaching Style
 1. **User is a beginner** — assume ZERO prior knowledge. Explain every concept, every syntax construct, every line
 2. **Provide full code in messages** — user copies code themselves. Never modify files without explicit build mode permission
 3. **Line-by-line explanation tables** — after every code block, explain each section in a table
@@ -522,40 +988,6 @@ echo '{"id":2,"method":"log.list"}' | python3 plugins/logger-py/main.py
 12. **Never commit unless asked** — no git operations without explicit instruction
 13. **Never force push to main/master** — warn user if they request this
 14. **Never amend unless the commit was just created by you and not pushed** — make a new commit for hook rejections
-
----
-
-## Plugin Manifest Schema (future)
-
-```json
-{
-  "name": "greet",
-  "version": "1.0.0",
-  "description": "Friendly greetings in Go",
-  "author": "Community",
-  "license": "MIT",
-  "type": "fullstack",
-  "backend": {
-    "command": "./plugins/greet-go/greet",
-    "args": [],
-    "methods": ["greet."]
-  },
-  "frontend": {
-    "component": "greet-widget",
-    "file": "plugins/greet-go/frontend/greet-widget.js",
-    "slot": "main"
-  }
-}
-```
-
-### Plugin Types
-- `backend` — only a subprocess, no UI contribution
-- `frontend` — only a Web Component, no subprocess
-- `fullstack` — both backend subprocess AND frontend Web Component
-
-### Slots (for frontend components)
-- `main` — primary content area (where plugin widgets display)
-- Future: `sidebar`, `header`, `statusbar`, `settings`
 
 ---
 
@@ -576,3 +1008,12 @@ echo '{"id":2,"method":"log.list"}' | python3 plugins/logger-py/main.py
   ]
 }
 ```
+
+### Plugin Types
+- `backend` — only a subprocess, no UI contribution
+- `frontend` — only a Web Component, no subprocess
+- `fullstack` — both backend subprocess AND frontend Web Component
+
+### Slots (for frontend components)
+- `main` — primary content area (where plugin widgets display)
+- Future: `sidebar`, `header`, `statusbar`, `settings`

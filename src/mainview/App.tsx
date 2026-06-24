@@ -10,6 +10,7 @@ const electroview = new Electroview({
 // Global bridge - Web Components call this instead of importing Electrobun
 window.__pluginRpc = async (method: string, params: any) => {
   const res = await electroview.rpc?.request.pluginRequest({ method, params })
+  if (!res.success) throw new Error(res.error || "RPC error")
   return res.data 
 }
 
@@ -19,10 +20,12 @@ const loadedPlugins = new Set<string>();
 function WebComponentSlot({ tag }: { tag: string }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!ref.current) return;
-    ref.current.innerHTML = "";
-    const el = document.createElement(tag);
-    ref.current.appendChild(el);
+    if (!ref.current) return
+    customElements.whenDefined(tag).then(() => {
+      if (!ref.current) return
+      const el = document.createElement(tag);
+      ref.current.appendChild(el);
+    });
   }, [tag]);
   return <div ref={ref} />;
 }

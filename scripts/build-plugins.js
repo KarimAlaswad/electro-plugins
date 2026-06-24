@@ -1,6 +1,73 @@
 import { $ } from "bun"
-import { existsSync, readdirSync, unlinkSync, writeFileSync } from "fs"
+import { existsSync, readdirSync, unlinkSync, writeFileSync, statSync } from "fs"
 import { join } from "path"
+
+// -- Framework map: extension -> Vite plugin config --
+// Add new frameworks here. That's all you need to do.
+const FRAMEWORKS = {
+  vue: {
+    extensions: ["vue"],
+    import: 'import vue from "@vitejs/plugin-vue"',
+    plugin: "vue()",
+  },
+  svelte: {
+    extensions: ["svelte"],
+    import: 'import { svelte } from "@sveltejs/vite-plugin-svelte"',
+    plugin: "svelte({ compilerOptions: { customElement: true } })",
+  },
+  react: {
+    extensions: ["jsx", "tsx"],
+    detect: ['"react"', "'react'", '"react-dom"', "'react-dom'"],
+    import: 'import react from "@vitejs/plugin-react"',
+    plugin: "react()",
+    entry: (tag, file) =>
+      [
+        `import "./style.css"`,
+        `import Component from "./${file}"`,
+        `import { createRoot } from "react-dom/client"`,
+        `customElements.define("${tag}", class extends HTMLElement {`,
+        `  root = null`,
+        `  connectedCallback() {`,
+        `    try { this.root = createRoot(this); this.root.render(<Component />) }`,
+        `    catch (e) { this.innerHTML = \`<p style="color:red;font-size:12px;">WC error: \${e}</p>\` }`,
+        `  }`,
+        `  disconnectedCallback() { this.root?.unmount(); this.root = null }`,
+        `})`,
+      ].join("\n"),
+  },
+  preact: {
+    extensions: ["jsx", "tsx"],
+    detect: ['"preact"', "'preact'", '"preact/hooks"', "'preact/hooks'"],
+    import: 'import preact from "@preact/preset-vite"',
+    plugin: "preact()",
+    entry: (tag, file) => [
+      `import "./style.css"`,
+      `import Component from "./${file}"`,
+      `import { render } from "preact"`,
+      `customElements.define("${tag}", class extends HTMLElement {`,
+      `  connectedCallback() {`,
+      `    try { render(<Component />, this) }`,
+      `    catch (e) { this.innerHTML = \`<p style="color:red;font-size:12px;">WC error: \${e}</p>\` }`,
+      `  }`,
+      `  disconnectedCallback() { render(null, this) }`,
+      `})`,
+    ].join("\n"),
+  },
+};
+
+const extMap = {}
+for (const [name, fw] of Object.entries(FRAMEWORKS)) {
+  for (const ext of fw.extensions) {
+    if (!extMap[ext]) extMap[ext] = []
+    extMap[ext].push(name)
+  }
+}
+
+
+function needsRebuild(input, output) {
+  if (!existsSync(output)) return true
+  return statSync(output).mtime < statSync(input).mtime 
+}
 
 const frontends = readdirSync("plugins")
   .map(name => join("plugins", name, "frontend"))
@@ -9,39 +76,75 @@ const frontends = readdirSync("plugins")
 for (const dir of frontends) {
   const files = readdirSync(dir)
 
-  // .jsx files => esbuild
-  for (const file of files.filter(f => f.endsWith(".jsx"))) {
-    const input = join(dir, file)
-    const output = join(dir, file.replace(".jsx", ".js"))
-    console.log(`esbuild: ${input} => ${output}`)
-    await $`esbuild ${input} --bundle --outfile=${output}`
-  }
+  for (const file of files) {
+    const ext = file.split(".").pop()
+    const candidates = extMap[ext]
+    if (!candidates) continue
+    const content = ext === "vue" || ext === 'svelte' ? '' : await Bun.file(join(dir, file)).text()
+    const fwName = candidates.length === 1
+      ? candidates[0]
+      : candidates.find(n => FRAMEWORKS[n].detect?.some(s => content.includes(s))) ?? candidates[0]
+    const fw = FRAMEWORKS[fwName]
 
-  // .vue files => Vite
-  for (const file of files.filter(f => f.endsWith(".vue"))) {
-    const name = file.replace(".vue", "")
-    const configFile = join(dir, ".vite.config.mjs")
-    writeFileSync(configFile, [
-      `import { defineConfig } from "vite"`,
-      `import vue from "@vitejs/plugin-vue"`,
-      `export default defineConfig({`,
-      `  root: ${JSON.stringify(dir)},`,
-      `  plugins: [vue()],`,
-      `  build: {`,
-      `    lib: {`,
-      `      entry: ${JSON.stringify("index.js")},`,
-      `      formats: ["iife"],`,
-      `      name: "Widget",`,
-      `      fileName: () => ${JSON.stringify(name + ".js")},`,
-      `    },`,
-      `    outDir: ${JSON.stringify(".")},`,
-      `    emptyOutDir: false,`,
-      `  }`,
-      `})`,
-    ].join("\n"));
-    console.log(`vite: ${join(dir, file)} => ${join(dir, name + ".js")}`)
-    await $`npx vite build --config ${configFile}`
-    unlinkSync(configFile)
+    const name = file.replace("." + ext, "");
+    const input = join(dir, file);
+    const output = join(dir, name + ".js");
+    if (!needsRebuild(input, output)) {
+      console.log(` skip ${file}`);
+      continue;
+    }
+
+    console.log(`vite: ${join(dir, file)} =>${output}`);
+
+    // Read plugin.json for the Web Component tag name
+    const pluginDir = join(dir, "..");
+    const pluginJsonPath = join(pluginDir, "plugin.json");
+    const tag = existsSync(pluginJsonPath)
+      ? JSON.parse(await Bun.file(pluginJsonPath).text()).frontendComponent
+      : name;
+
+    // Temp files
+    const configFile = join(dir, ".vite.config.mjs");
+    const cssFile = join(dir, "style.css");
+    const entryFile = join(dir, "entry.tsx");
+
+    // Step 1: CSS (Tailwind available for ALL frameworks)
+    writeFileSync(
+      cssFile,
+      "@tailwind base;\n@tailwind components;\n@tailwind utilities;\n",
+    );
+
+    // Step 2: entry.tsx - wraps React/Preact components as Web Components
+    if (fw.entry) writeFileSync(entryFile, fw.entry(tag, file))
+
+    // Step 3: Vite config
+    const libEntry = fw.entry ? '"entry.tsx"' : '"index.js"';
+    writeFileSync(
+      configFile,
+      [
+        `import { defineConfig } from "vite"`,
+        `import injectCss from "vite-plugin-css-injected-by-js"`,
+        fw.import,
+        `export default defineConfig({`,
+        `  root: ${JSON.stringify(dir)},`,
+        `  plugins: [${fw.plugin}, injectCss()],`,
+        `  define: { 'process.env.NODE_ENV': JSON.stringify('production') },`,
+        `  build: {`,
+        `    lib: { entry: ${libEntry}, formats: ["iife"], name: "Widget", fileName: () => ${JSON.stringify(name + ".js")} },`,
+        `    outDir: ${JSON.stringify(".")},`,
+        `    emptyOutDir: false,`,
+        `  }`,
+        `})`,
+      ].join("\n"),
+    );
+
+    // Step 4: Build
+    await $`bunx vite build --config ${configFile}`;
+
+    // Step 5: Cleanup temp files
+    unlinkSync(configFile);
+    if (fw.entry) unlinkSync(entryFile);
+    unlinkSync(cssFile);
   }
 }
 

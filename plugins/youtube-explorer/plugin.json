@@ -1,0 +1,12 @@
+{
+  "name": "youtube-explorer",
+  "version": "1.0.0",
+  "description": "Search Youtube videos",
+  "author": "Community",
+  "command": "bun",
+  "args": ["plugins/youtube-explorer/main.ts"],
+  "methods": ["youtube.search", "youtube.feed", "youtube.auth.status", "youtube.auth.login", "youtube.auth.logout"],
+  "frontendComponent": "youtube-widget",
+  "frontendFile": "plugins/youtube-explorer/frontend/youtube-widget.js",
+  "frontendSlot": "main"
+}

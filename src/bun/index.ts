@@ -21,6 +21,7 @@ interface PluginInstance {
 const plugins: PluginInstance[] = []
 const pendingRequests = new Map<number, PendingRequest>()
 let nextId = 1
+let server: { port: number; stop: () => void } | null = null
 
 // -- Find project root (walk up until we find package.json) --
 function findProjectRoot(from: string): string {
@@ -34,6 +35,25 @@ function findProjectRoot(from: string): string {
 }
 
 const baseDir = findProjectRoot(import.meta.dir)
+
+function startStaticServer(): string {
+	const serveDir = existsSync(join(baseDir, "dist"))
+		? join(baseDir, "dist")
+		: join(baseDir, "views", "mainview")
+	server = Bun.serve({
+		port: 0, 
+		async fetch(req) {
+			const url = new URL(req.url)
+			let pathname = url.pathname
+			if (pathname === "/") pathname = "/index.html"
+			const file = Bun.file(join(serveDir, pathname))
+			if (await file.exists()) return new Response(file)
+			return new Response(Bun.file(join(serveDir, "index.html")), { status: 200 })
+		},
+	})
+	console.log(`App server: http://localhost:${server.port}`)
+	return `http://localhost:${server.port}`
+}
 
 // -- Load manifests --
 const pluginDirs = readdirSync(join(baseDir, "plugins"))
@@ -87,11 +107,12 @@ async function readStdout(plugin: PluginInstance) {
 		while (true) {
 			const { done, value } = await reader.read()
 			if (done) break
-			buffer += decoder.decode(value, { stream: true })
-			const lines = buffer.split("\n")
-			for (const line of lines) {
-				if (line.trim()) handlePluginResponse(plugin, line)
-			}
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || ""; // keep incomplete line for next chunk
+      for (const line of lines) {
+        if (line.trim()) handlePluginResponse(plugin, line);
+      }
 		}
 	} catch (e) {
 		console.error(`[${plugin.config.name}] stdout error:`, e)
@@ -240,7 +261,7 @@ async function getMainViewUrl(): Promise<string> {
 			console.log("Vite dev server not running. Using bundled assets.")
 		}
 	}
-	return "views://mainview/index.html"
+	return startStaticServer()
 }
 
 // -- Create the window --
@@ -263,10 +284,7 @@ setInterval(() => {
 
 // -- Cleanup on exit --
 process.on("SIGINT", () => {
-	for (const p of plugins) {
-		try {
-			p.process.kill()
-		} catch {}
-	}
+	server?.stop()
+	for (const p of plugins) p.process.kill()
 	process.exit()
 })
