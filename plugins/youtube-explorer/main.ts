@@ -281,14 +281,12 @@ async function handleRequest(request: any) {
         cookie: cookieStr,
         cache: new UniversalCache(true),
       });
-      console.error(`[feed] start id=${reqId}`);
       const home = await Promise.race([
         tube.getHomeFeed(),
         new Promise<any>((_, reject) =>
           setTimeout(() => reject(new Error("timeout")), 8000),
         ),
       ]);
-      console.error("[feed] getHomeFeed done");
       const grid = home.contents;
       const videos: any[] = [];
       for (const section of grid?.contents || []) {
@@ -344,7 +342,7 @@ rl.on("line", (line: string) => {
   try {
     const parsed = JSON.parse(trimmed);
     if (parsed.id != null) {
-      if (knownIds.has(parsed.id)) return; // drop duplicate
+      if (knownIds.has(parsed.id)) return;
       knownIds.add(parsed.id);
     }
     queue.push(line);

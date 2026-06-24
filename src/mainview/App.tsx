@@ -4,7 +4,10 @@ import type { PluginInfo, PluginManifest } from "../shared/types"
 
 
 const electroview = new Electroview({
-	rpc: Electroview.defineRPC({ handlers: { requests: {}, messages: {} } }),
+	rpc: Electroview.defineRPC({
+		maxRequestTime: 20000,
+		handlers: { requests: {}, messages: {} },
+	}),
 })
 
 // Global bridge - Web Components call this instead of importing Electrobun

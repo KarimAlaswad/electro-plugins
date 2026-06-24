@@ -130,6 +130,7 @@ async function readStderr(plugin: PluginInstance) {
 			if (done) break
 			buffer += decoder.decode(value, { stream: true })
 			const lines = buffer.split("\n")
+			buffer = lines.pop() || ""
 			for (const line of lines) {
 				if (line.trim()) console.error(`[${plugin.config.name}]`, line)
 			}
