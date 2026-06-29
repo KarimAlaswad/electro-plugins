@@ -149,12 +149,16 @@ function resolvePath(p: string): string {
 }
 
 for (const manifest of manifests) {
-	if (!manifest.command) continue  // frontend-only plugin, no process
+	if (!manifest.run) continue // frontend-only plugin, no process
 
-	const cmd = resolvePath(manifest.command)
-	const cmdArgs = (manifest.args || []).map(resolvePath)
+	// "run" is a single string with command + args, e.g.:
+	// 		"bun plugins/youtube-explorer/main.ts"
+	// 		"./plugins/greet-go/greet"
+	const parts = manifest.run.split(/\s+/)
+	const cmd = resolvePath(parts[0])
+	const args = parts.slice(1).map(resolvePath)
 
-	const proc = Bun.spawn([cmd, ...cmdArgs], {
+	const proc = Bun.spawn([cmd, ...args], {
 		stdin: "pipe",
 		stdout: "pipe",
 		stderr: "pipe",
@@ -221,28 +225,22 @@ const rpc = BrowserView.defineRPC({
           methods: p.config.methods || [],
         }));
       },
-      getPluginManifests: async (_params: unknown) => {
-        return manifests.map((m) => ({
-          name: m.name,
-          version: m.version,
-          description: m.description,
-          author: m.author,
-          methods: m.methods || [],
-          frontendComponent: m.frontendComponent || null,
-          frontendSlot: m.frontendSlot || null,
-        }));
-      },
-      getPluginFrontend: async (params: unknown) => {
-        const { name } = params as { name: string };
-        const manifest = manifests.find((m) => m.name === name);
-        if (!manifest || !manifest.frontendFile) {
-          throw new Error(`No frontend for plugin: ${name}`);
-        }
-        const code = await Bun.file(
-          join(baseDir, manifest.frontendFile),
-        ).text();
-        return { code };
-      },
+			getPluginManifests: async(__params: unknown) => {
+				return manifests.map((m) => ({
+					name: m.name,
+					version: m.version,
+					description: m.description,
+					author: m.author,
+					methods: m.methods || [],
+					ui: m.ui || null,
+					feeds: m.feeds || null,
+				}));
+			},
+			getPluginFrontend: async (params: unknown) => {
+				const { path } = params as { path: string };
+				const code = await Bun.file(join(baseDir, path)).text()
+				return { code };
+			},
     },
     messages: {},
   },

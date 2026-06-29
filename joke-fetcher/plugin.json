@@ -6,7 +6,4 @@
   "command": "bun",
   "args": ["plugins/joke-fetcher/main.ts"],
   "methods": ["joke.random"],
-  "frontendComponent": "joke-widget",
-  "frontendFile": "plugins/joke-fetcher/frontend/joke-widget.js",
-  "frontendSlot": "main"
 }

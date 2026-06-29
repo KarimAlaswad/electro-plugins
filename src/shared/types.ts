@@ -15,15 +15,19 @@ export interface PluginRequestResults {
   error?: string
 }
 
+export interface FeedContrib {
+  type: string    // e.g. "video", "post", "image"
+  method: string  // RPC method to call, e.g. "youtube.feed"
+  card?: string   // WC tag, e.g. "yt-video-card" - path derived
+}
+
 export interface PluginManifest {
   name: string
-  version: string 
-  description: string 
-  author: string 
-  command?: string 
-  args?: string[] 
+  version?: string 
+  description?: string 
+  author?: string 
+  run?: string 
   methods?: string[] 
-  frontendComponent?: string 
-  frontendFile?: string 
-  frontendSlot?: string 
+  ui?: string           // tag name for main-UI WC (only feed plugin)
+  feeds?: FeedContrib
 }

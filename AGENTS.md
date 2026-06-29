@@ -21,9 +21,17 @@ Plugin UIs use Web Components (any framework bundled to self-contained .js).
 
 Phase 1 (Plugin System) is COMPLETE — flat manifests, host manifest scanning at startup,
 plugin spawning with stdin/stdout pipes, JSON-RPC routing by method prefix, Web Component
-frontends (Preact + Vue), centralized build script (scripts/build-plugins.js), auto-load
-all plugin UIs on startup via window.__pluginRpc() global bridge. Two demo plugins exist:
-greet (Go + Preact) and logger (Python + Vue).
+frontends (Preact + Vue), centralized build script (scripts/build-plugins.js).
+
+Phase 2 (YouTube Explorer) is COMPLETE — Bun/TS backend with Innertube API, cookie auth
+via browser DB discovery, search + home feed + auth flow, WC frontend with embedded player.
+
+Phase 3 (Unified Feed) is COMPLETE — old per-plugin widget cards removed. App.tsx loads
+manifests, injects card frontend scripts, and mounts a single <feed-widget> which discovers
+feed-contributing plugins at runtime, calls their feed methods, and renders their card WCs.
+Plugin manifest simplified: `run` replaces `command`+`args`, `feeds` block replaces
+`frontendComponent`/`frontendFile`/`frontendSlot`. Paths derived from plugin name + tag.
+Build script entry templates include `_item` and `_manifests` setters for WC data flow.
 
 Long-term vision: a unified API client that aggregates every internet service by media
 type (posts, shorts, videos, DMs, images, etc.) into one app, with community-built
@@ -186,14 +194,16 @@ building the first real API plugin to fetch internet data and show it on screen.
 ├── .gitignore                       # node_modules/, build/, dist/, artifacts/, greet binary, *.log
 │
 ├── scripts/
-│   └── build-plugins.js             # Centralized plugin frontend build (48 lines)
-│       - Scans plugins/*/frontend/ for .jsx → esbuild --bundle
-│       - Scans plugins/*/frontend/ for .vue → Vite build (IIFE format)
+│   └── build-plugins.js             # Centralized plugin frontend build (~80 lines)
+│       - Scans plugins/*/plugin.json for any field ending in a tag name (ui, feeds.card)
+│       - Falls back to scanning plugins/*/frontend/ for .tsx/.jsx/.vue
+│       - React/Preact: esbuild --bundle with entry template (has _item/_manifests setters)
+│       - Vue: Vite build (IIFE format)
 │       - Run: "bun run build:plugins" or auto-runs in "bun run start"
 │
 ├── src/
 │   ├── bun/
-│   │   └── index.ts                 # HOST (~272 lines)
+│   │   └── index.ts                 # HOST (~275 lines)
 │   │       - Types: PendingRequest, PluginInstance
 │   │       - findProjectRoot(): walks up from import.meta.dir to find package.json
 │   │       - resolvePath(): makes relative paths absolute for Bun.spawn args
@@ -205,73 +215,77 @@ building the first real API plugin to fetch internet data and show it on screen.
 │   │       - readStderr(): same pattern, logs to console
 │   │       - routeRequest(): method prefix match → Promise with 10-second timeout
 │   │       - 4 RPC handlers: pluginRequest, pluginList, getPluginManifests, getPluginFrontend
-│   │       - All params typed as unknown, cast internally (Electrobun defineRPC requirement)
+│   │       - getPluginManifests returns all manifests (with ui + feeds fields)
+│   │       - getPluginFrontend takes { path: "plugins/x/frontend/y.js" }
+│   │       - Reads `run` field (replaces old `command`+`args`)
+│   │       - No backward compat with old format
+│   │       - All params typed as unknown, cast internally
 │   │       - getMainViewUrl(): checks Vite HMR on port 5173, falls back to bundled
 │   │       - BrowserWindow creation, health check interval (5s), SIGINT cleanup
 │   │
 │   ├── mainview/
-│   │   ├── App.tsx                  # FRONTEND (~152 lines)
+│   │   ├── App.tsx                  # FRONTEND (~80 lines, simplified)
 │   │   │   - Electroview RPC bridge from electrobun/view
-│   │   │   - window.__pluginRpc() global bridge for Web Components
-│   │   │   - Auto-loads all plugin frontends on mount (getPluginFrontend → inject <script>)
-│   │   │   - WebComponentSlot(): creates <tag> element inside <div> for each WC
-│   │   │   - Plugin card list (name + desc + alive/dead badge + method buttons)
-│   │   │   - callMethod() → pluginRequest RPC → display JSON result
-│   │   │   - Result box (preformatted JSON in <pre>)
+│   │   │   - maxRequestTime: 20000 set (CRITICAL)
+│   │   │   - window.__pluginRpc() global bridge (simple: routes to pluginRequest, no host.*)
+│   │   │   - On mount: loads manifests via electroview.rpc.request.getPluginManifests({})
+│   │   │   - Injects card frontend JS for any manifest with feeds.card or ui
+│   │   │   - Renders <feed-widget> and passes manifests via .manifests setter
+│   │   │   - No WebComponentSlot, no plugin cards, no callMethod, no results box
 │   │   ├── main.tsx                 # React entry point (StrictMode, createRoot)
 │   │   ├── index.html               # HTML shell (<div id="root"> + <script>)
 │   │   └── index.css                # @tailwind base/components/utilities
 │   │
 │   └── shared/
-│       └── types.ts                 # SHARED TYPES (29 lines):
+│       └── types.ts                 # SHARED TYPES (45 lines):
 │           - PluginInfo { name, alive, methods }
 │           - PluginRequestParams { method, params: any }
 │           - PluginRequestResults { success, data?, error? }
+│           - FeedContrib { type: string, method: string, card?: string }
 │           - PluginManifest { name, version, description, author,
-│               command?, args?, methods?, frontendComponent?,
-│               frontendFile?, frontendSlot? }
+│               run?, methods?, ui?, feeds?: FeedContrib }
 │
 ├── plugins/
-│   ├── greet-go/
-│   │   ├── plugin.json              # Flat manifest (12 lines)
-│   │   │   - name: "greet", command: "./plugins/greet-go/greet"
-│   │   │   - methods: ["greet.hello", "greet.bye"]
-│   │   │   - frontendComponent: "greet-widget"
-│   │   │   - frontendFile: "plugins/greet-go/frontend/greet-widget.js"
-│   │   ├── main.go                  # Go backend (~78 lines)
-│   │   │   - Request/Response structs with *json.RawMessage params
-│   │   │   - stdin/stdout loop via bufio.Scanner
-│   │   │   - greet.hello: returns greeting with param name (default "World")
-│   │   │   - greet.bye: returns farewell with param name
-│   │   ├── greet                    # Compiled binary (~2MB, in .gitignore)
+│   ├── feed/                        # Phase 3: Feed orchestrator (no backend)
+│   │   ├── plugin.json              # { name, description, author, version, ui: "feed-widget" }
 │   │   └── frontend/
-│   │       ├── greet-widget.jsx     # Preact Web Component source (42 lines)
-│   │       │   - Text input + Hello/Bye buttons + JSON result display
-│   │       │   - Calls window.__pluginRpc() for backend communication
-│   │       └── greet-widget.js      # Built output (~139KB, esbuild --bundle)
+│   │       └── feed-widget.tsx      # React WC (~210 lines)
+│   │           - Uses ReactDOM.createRoot
+│   │           - Receives manifests via .manifests setter from App.tsx
+│   │           - 5-state machine: loading, system error, empty, partial, loaded
+│   │           - For each source with feeds: calls __pluginRpc(source.feeds.method, {})
+│   │           - CardRenderer: creates card WC elements, sets .item, uses whenDefined
+│   │           - Error banners per-plugin with optional "Sign in" button
+│   │           - Auth: calls .auth.login from source methods, reloads feed on success
 │   │
-│   └── logger-py/
-│       ├── plugin.json              # Flat manifest (13 lines)
-│       │   - name: "logger", command: "python3"
-│       │   - args: ["plugins/logger-py/main.py"]
-│       │   - methods: ["log.info", "log.list"]
-│       │   - frontendComponent: "log-viewer"
-│       │   - frontendFile: "plugins/logger-py/frontend/log-viewer.js"
-│       ├── main.py                  # Python backend (~49 lines)
-│       │   - send_response(): JSON + \n to stdout, then flush
-│       │   - handle_request(): dispatches by method
-│       │   - log.info: appends to electro-plugins.log, returns "ok"
-│       │   - log.list: reads all lines from log file, returns array
-│       │   - sys.stdin loop line by line
-│       │   - params.get("params", {}) prevents AttributeError crash
-│       │   - All indentation: 4 spaces (was 6 — fixed in bug #6)
+│   ├── greet-go/                    # Go plugin demo (Phase 1, backend only)
+│   │   ├── plugin.json              # { name, run: "./plugins/greet-go/greet", methods }
+│   │   ├── main.go                  # Go backend (~78 lines)
+│   │   └── greet                    # Compiled binary (~2MB, in .gitignore)
+│   │   NOTE: frontend/ dir removed — greet-widget no longer builds or loads
+│   │
+│   ├── logger-py/                   # Python plugin demo (Phase 1, backend only)
+│   │   ├── plugin.json              # { name, run: "python3 plugins/logger-py/main.py", methods }
+│   │   └── main.py                  # Python backend (~49 lines)
+│   │   NOTE: frontend/ dir removed — log-viewer no longer builds or loads
+│   │
+│   ├── joke-fetcher/                # Bun/TS plugin demo (Phase 1, backend only)
+│   │   ├── plugin.json              # { name, run, methods }
+│   │   └── main.ts                  # Bun/TS backend
+│   │   NOTE: frontend/ dir removed — joke-widget no longer builds or loads
+│   │
+│   └── youtube-explorer/            # YouTube plugin (Phase 2 + Phase 3 feed source)
+│       ├── plugin.json              # { run: "bun plugins/youtube-explorer/main.ts",
+│       │                              feeds: { type: "video", method: "youtube.feed",
+│       │                                       card: "yt-video-card" } }
+│       ├── main.ts                  # Backend (~250 lines): Innertube API, cookie auth, feed
 │       └── frontend/
-│           ├── log-viewer.vue       # Vue SFC source (27 lines)
-│           │   - Refresh button + log entry list + error/loading states
-│           │   - Calls window.__pluginRpc() for backend communication
-│           ├── index.js             # Vue entry glue (8 lines)
-│           │   - Imports .vue, creates Vue app, registers as WC
-│           └── log-viewer.js        # Built output (~99KB, Vite IIFE build)
+│           ├── yt-video-card.tsx    # React card WC (~75 lines)
+│           │   - Receives item prop: { thumbnail, title, channel, viewCount, published }
+│           │   - Uses _item setter from build template
+│           │   - Renders thumbnail img, title H3, channel, views, published date
+│           │   - No __pluginRpc calls (pure display)
+│           └── youtube-widget.tsx   # DEAD CODE — old standalone widget, still builds, never loaded
 │
 ├── build/                           # Electrobun build output (in .gitignore)
 ├── dist/                            # Vite build output (in .gitignore)
@@ -394,90 +408,77 @@ requires `(params?: unknown) => unknown`.
 
 ---
 
-## Frontend Behavior (src/mainview/App.tsx — ~152 lines)
+## Frontend Behavior (src/mainview/App.tsx — ~80 lines, simplified in Phase 3)
 
 ### Imports & Setup
 - `useState, useEffect, useRef` from React (state, lifecycle, DOM references)
 - `Electroview` from electrobun/view (Electrobun's browser-side RPC bridge)
-- Type imports: `PluginInfo`, `PluginManifest` from shared/types
+- Type imports: `PluginManifest` from shared/types
+
+### RPC Configuration
+```typescript
+const electroview = new Electroview({
+  rpc: Electroview.defineRPC({
+    maxRequestTime: 20000,  // MUST be >= all inner timeouts combined
+    handlers: { requests: {}, messages: {} },
+  }),
+})
+```
+- `maxRequestTime: 20000` is CRITICAL. The host has `BrowserView.defineRPC({ maxRequestTime: 15000 })`.
+  The routeRequest has 10s, the plugin has 8s on each API call.
+  Frontend timeout must be the largest (20s) because it's the outermost caller.
+  Without this, slow plugin requests (like youtube.feed at ~2.5s) silently time out
+  on the frontend even though the host and plugin complete successfully.
 
 ### Global Bridge (module-level, outside App component)
 ```typescript
 window.__pluginRpc = async (method: string, params: any) => {
   const res = await electroview.rpc?.request.pluginRequest({ method, params })
+  if (!res.success) throw new Error(res.error || "RPC error")
   return res.data
 }
 ```
 - Any Web Component can call `window.__pluginRpc(method, params)` without importing Electrobun
-- Extracts `.data` from the `{ success, data, error }` response envelope
-
-### WebComponentSlot (Helper Component)
-```typescript
-function WebComponentSlot({ tag }: { tag: string }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!ref.current) return;
-    ref.current.innerHTML = "";
-    const el = document.createElement(tag);
-    ref.current.appendChild(el);
-  }, [tag]);
-  return <div ref={ref} />;
-}
-```
-- Takes a `tag` prop (e.g., `"greet-widget"`)
-- Creates a DOM element with that tag name inside a `<div>`
-- If the WC was already registered via `customElements.define()`, the browser auto-instantiates it
-- Clears previous content before mounting (prevents duplicates on re-render)
+- Checks `res.success`, throws on error (standard across all callers)
+- No `host.*` routing — bridge only routes to plugin subprocesses
 
 ### App Component — State
 - `manifests` — array of `PluginManifest` from `getPluginManifests` RPC
-- `plugins` — array of `PluginInfo` from `pluginList` RPC (alive/dead status)
-- `result` — JSON string to display in the result box
-- `loading` — currently loading method (disables buttons while in progress)
-- `loadedPlugins` — `Set<string>` tracking which frontends have been injected (prevents double-loading)
+- `feedRef` — ref to `<feed-widget>` DOM element for setting `.manifests`
 
-### On Mount — Two Effects
-
-**Effect 1: Load manifests and plugin status**
-```typescript
-useEffect(() => { loadManifests(); loadPlugins() }, [])
-```
-Runs once when App mounts. Fetches both manifest data and alive/dead status.
-
-**Effect 2: Auto-load all frontend Web Components**
+### On Mount — Single Effect
 ```typescript
 useEffect(() => {
-  if (manifests.length === 0) return
-  loadAllFrontends()
+  (async () => {
+    const ms = await electroview.rpc.request.getPluginManifests({})
+    setManifests(ms)
+  })()
+}, [])
+```
+
+### Load Frontends + Pass to Feed
+```typescript
+useEffect(() => {
+  if (manifests.length === 0 || !feedRef.current) return
+  loadFrontends()
+  feedRef.current.manifests = manifests
 }, [manifests])
 ```
-Runs when `manifests` state array is populated. For each manifest with a `frontendComponent`:
-1. Skip if already loaded (checked via `loadedPlugins` Set)
-2. Call `getPluginFrontend({ name })` → get JS code string
-3. Create `<script>` element, set `textContent` = code
-4. Append to `<body>` → browser executes script → `customElements.define()` called
-5. Any `<tag-name>` elements on the page now render the WC
+1. Fetches manifests on mount via host RPC directly (`electroview.rpc.request`, NOT `__pluginRpc`)
+2. When manifests arrive, injects card frontend JS for any manifest with `feeds.card` or `ui`
+   - Calls `electroview.rpc.request.getPluginFrontend({ path: "plugins/x/frontend/y.js" })`
+   - Creates `<script>` element, sets `textContent` = returned JS code
+   - Appends to `<body>` → `customElements.define()` runs
+3. Passes manifests array to feed-widget via `.manifests` setter
+   - `feedRef.current.manifests = manifests`
+   - feed-widget's setter stores data and calls `loadFeed()`
 
-### Plugin Cards
-- Rendered from `plugins.map()` — one card per plugin
-- Top bar: plugin name (heading) + description + version + alive/dead badge
-- Badge: green `● Alive` or red `● Dead` (conditional CSS classes)
-- Method buttons: one per method name (e.g., "greet.hello", "log.list")
-- All buttons disabled while `loading !== null`
-- Below buttons: if manifest has `frontendComponent`, render `<WebComponentSlot tag={...} />`
-
-### Calling a Plugin (from host method buttons)
-1. Click a method button → `callMethod(method)`
-2. Sets `loading` to method name (disables all buttons)
-3. Calls `electroview.rpc.request.pluginRequest({ method, params: {} })`
-4. On success: `JSON.stringify(res, null, 2)` → display in `<pre>` result box
-5. On error: display error message
-6. `finally { setLoading(null) }` — re-enable buttons
-
-### Result Box
-- Only visible when `result !== ""`
-- Uses short-circuit `{result && (<div>...<pre>{result}</pre>...</div>)}`
-- Pre-formatted JSON in a gray `<pre>` block with `overflow-x-auto` (horizontal scroll)
+### Render
+```typescript
+return <feed-widget ref={feedRef} />
+```
+- Only renders `<feed-widget>` — no plugin cards, no method buttons, no result box
+- `WebComponentSlot`, `callMethod`, plugin cards, badges, result display all removed
 
 ---
 
@@ -539,30 +540,54 @@ The plugin never depends on what version of React/Vue/Preact the host app uses.
 }
 ```
 
-### Fields
-| Field | Required | Type | Description |
-|-------|----------|------|-------------|
-| `name` | ✅ | string | Unique identifier. Used in RPC (e.g., getPluginFrontend), displayed as card title |
-| `version` | ✅ | string | Semver version (e.g., "1.0.0"). Displayed in card header |
-| `description` | ✅ | string | Short description. Displayed in card header |
-| `author` | ✅ | string | Creator name. Displayed in card header |
-| `command` | ❌ | string | Executable path. Absolute, relative to project root, or bare name in PATH (e.g., "bun", "python3"). Omit for frontend-only plugins |
-| `args` | ❌ | string[] | Arguments to pass to command. Paths resolved relative to project root via `resolvePath()` |
-| `methods` | ❌ | string[] | Array of exact method names (e.g., `["greet.hello", "greet.bye"]`). Used for routing AND displayed as buttons in the plugin card |
-| `frontendComponent` | ❌ | string | HTML tag name for custom element (e.g., `"greet-widget"` → `<greet-widget>`). Must match the name passed to `customElements.define()` |
-| `frontendFile` | ❌ | string | Path to built Web Component .js file (relative to project root). Read by `getPluginFrontend` RPC |
-| `frontendSlot` | ❌ | string | Where in the UI this WC appears. Currently only `"main"` is supported. Future: `sidebar`, `header`, `statusbar`, `settings` |
+### Fields (Phase 3 — simplified)
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | ✅ | Unique plugin ID. Used in RPC routing (e.g., `pluginRequest`), path derivation |
+| `version` | ❌ | Semver version. Display in UI. |
+| `description` | ❌ | Short description. Display in UI. |
+| `author` | ❌ | Creator name. Display in UI. |
+| `run` | ❌ | Command to spawn subprocess. Replaces old `command`+`args`. Example: `"bun plugins/youtube-explorer/main.ts"` |
+| `methods` | ❌ | Array of method prefixes for RPC routing. Example: `["youtube.feed", "youtube.auth.login"]` |
+| `ui` | ❌ | WC tag for main-UI rendering. Path derived: `plugins/<name>/frontend/<tag>.js`. App.tsx loads AND mounts this. Only feed plugin uses it. |
+| `feeds` | ❌ | Feed contribution object. If present, this plugin is a feed source. |
+| `feeds.type` | ✅ (if feeds) | Content type: `"video"`, `"image"`, `"post"`, etc. |
+| `feeds.method` | ✅ (if feeds) | RPC method name that returns feed items (array of any JSON shape). |
+| `feeds.card` | ❌ | WC tag for rendering one item. Path derived: `plugins/<name>/frontend/<tag>.js`. If absent, items skipped. |
 
-### Plugin Types (Determined by Fields Present)
-- **Backend-only**: Has `command` but no `frontend*` fields → spawned as subprocess, no UI
-- **Frontend-only**: Has `frontendComponent`/`frontendFile` but no `command` → loaded as WC, no subprocess
-- **Fullstack**: Has BOTH → spawned as subprocess AND WC auto-loaded in plugin card
+### Plugin Types (Phase 3)
+- **Backend-only**: Has `run` but no `ui`/`feeds` → spawned as subprocess, no UI
+- **Frontend-only (main UI)**: Has `ui` but no `run` → WC loaded and mounted by App.tsx
+- **Frontend-only (card)**: Has `feeds.card` but no `run` → WC loaded by App.tsx, mounted by feed-widget
+- **Fullstack**: Has `run` + `ui`/`feeds` → subprocess + frontend components
+- **Feed source**: Has `run` + `feeds` → subprocess with feed method + card WC
+
+**Path derivation**: frontend file paths NOT in manifest. Derived at runtime:
+- Card: `plugins/<name>/frontend/<feeds.card>.js`
+- UI WC: `plugins/<name>/frontend/<ui>.js`
+
+Example fullstack plugin:
+```json
+{
+  "name": "youtube-explorer",
+  "run": "bun plugins/youtube-explorer/main.ts",
+  "methods": ["youtube.feed", "youtube.auth.status", "youtube.auth.login", "youtube.auth.logout"],
+  "version": "1.0.0",
+  "description": "Browse YouTube",
+  "author": "Community",
+  "feeds": {
+    "type": "video",
+    "method": "youtube.feed",
+    "card": "yt-video-card"
+  }
+}
+```
 
 ---
 
 ## Plugin Implementations
 
-### greet-go — Go Backend + Preact Frontend
+### greet-go — Go Backend (Phase 1 demo, frontend removed in Phase 3)
 
 #### Backend (main.go — ~78 lines)
 - Uses `*json.RawMessage` for params (user's explicit choice over simpler `map[string]interface{}`)
@@ -579,52 +604,9 @@ The plugin never depends on what version of React/Vue/Preact the host app uses.
 - Compile: `go build -o greet main.go` in the greet-go directory
 - Test standalone: `echo '{"id":1,"method":"greet.hello","params":{"name":"Niri"}}' | ./plugins/greet-go/greet`
 
-#### Frontend (greet-widget.jsx — 42 lines) — Preact Web Component
-```jsx
-import { useState } from "preact/hooks"
-import { render } from "preact"
+**NOTE:** Frontend dir (greet-widget.jsx) removed in Phase 3 — no longer builds or loads.
 
-function GreetUI() {
-  const [name, setName] = useState("World")
-  const [result, setResult] = useState(null)
-
-  async function call(method) {
-    setResult("Loading...")
-    try {
-      const res = await window.__pluginRpc(method, { name })
-      setResult(res)
-    } catch (e) {
-      setResult({ error: e.message })
-    }
-  }
-
-  return (
-    <div>
-      <input type="text" value={name} onInput={e => setName(e.target.value)} />
-      <button onClick={() => call("greet.hello")}>Hello</button>
-      <button onClick={() => call("greet.bye")}>Bye</button>
-      {result && <pre>{JSON.stringify(result, null, 2)}</pre>}
-    </div>
-  )
-}
-
-class GreetWidget extends HTMLElement {
-  connectedCallback() { this.root = render(<GreetUI />, this) }
-  disconnectedCallback() { render(null, this) }
-}
-customElements.define("greet-widget", GreetWidget)
-```
-- Uses Preact (3KB React-like library with same API). Full Preact inlined into bundle by esbuild.
-- Text input bound to `name` state via `useState`
-- Hello/Bye buttons call `window.__pluginRpc(method, { name })` and display JSON result
-- `GreetWidget` extends `HTMLElement` — the browser standard for custom elements
-- `connectedCallback()` — lifecycle hook called when element is added to the DOM. Renders Preact inside the element.
-- `disconnectedCallback()` — lifecycle hook called when element is removed. Cleans up Preact render.
-- `customElements.define("greet-widget", GreetWidget)` — registers the element globally
-- Built by esbuild: `esbuild greet-widget.jsx --bundle --outfile=greet-widget.js`
-- Output: ~139KB (includes Preact + dependencies, all self-contained in a single file)
-
-### logger-py — Python Backend + Vue Frontend
+### logger-py — Python Backend (Phase 1 demo, frontend removed in Phase 3)
 
 #### Backend (main.py — ~49 lines)
 - `send_response(req_id, result, error)` — writes JSON + `\n` to stdout, then flushes
@@ -637,56 +619,100 @@ customElements.define("greet-widget", GreetWidget)
 - All indentation is 4 spaces (was 6 at one point — fixed in bug #6)
 - Test standalone: `echo '{"id":1,"method":"log.info","params":{"message":"test"}}' | python3 plugins/logger-py/main.py`
 
-#### Frontend (log-viewer.vue — 27 lines + index.js — 8 lines) — Vue Web Component
-**log-viewer.vue:**
-```vue
-<template>
-  <div>
-    <button @click="refresh">Refresh</button>
-    <p v-if="entries === null">Click Refresh to load logs.</p>
-    <ul v-else-if="Array.isArray(entries)">
-      <li v-if="entries.length === 0">No log entries yet.</li>
-      <li v-for="(e, i) in entries" :key="i">{{ e }}</li>
-    </ul>
-    <pre v-else>{{ typeof entries === 'string' ? entries : JSON.stringify(entries, null, 2) }}</pre>
-  </div>
-</template>
+**NOTE:** Frontend dir (log-viewer.vue + index.js) removed in Phase 3 — no longer builds or loads.
 
-<script setup>
-import { ref } from "vue"
-const entries = ref(null)
-async function refresh() {
-  entries.value = "Loading..."
-  try {
-    const res = await window.__pluginRpc("log.list", {})
-    entries.value = res.data || res
-  } catch (e) {
-    entries.value = [{ error: e.message }]
-  }
+### joke-fetcher — Bun/TS Backend (Phase 1 demo, frontend removed in Phase 3)
+
+#### Backend (main.ts — ~40 lines)
+- Fetches jokes from a public API
+- Methods: `joke.random`, `joke.types`
+
+**NOTE:** Frontend dir removed in Phase 3. `index.js` was the entry glue (Vue), removed because it no longer works without `frontendComponent` manifest field.
+
+### youtube-explorer — Bun/TS Backend + React Card WC (Phase 2 + Phase 3 feed source)
+
+#### Backend (main.ts — ~250 lines)
+- Uses Innertube API (YouTube's internal API) for feed data
+- Cookie auth via browser DB discovery (Firefox SQLite, Chrome via sweet-cookie)
+- SAPISID cookie extraction → SAPISIDHASH Authorization header
+- ST-* cookie filter (prevents 413 Request Entity Too Large)
+- Per-request `Innertube` instances (no global `tube` — eliminates race conditions)
+- 8s Promise.race timeout on getHomeFeed() and search()
+- Event-based stdin queue with `knownIds` dedup (defeats Bun canary re-delivery bug)
+- `youtube.feed`: returns array of video items from YouTube home page
+- `youtube.search`: search YouTube by query
+- `youtube.auth.login`/`youtube.auth.logout`/`youtube.auth.status`: auth flow
+- Test standalone: `echo '{"id":1,"method":"youtube.feed"}' | bun run plugins/youtube-explorer/main.ts`
+
+#### Frontend — yt-video-card.tsx (~75 lines, React card WC)
+```jsx
+import { useState } from "react"
+import { createRoot } from "react-dom/client"
+
+function YTVideoCard({ item }) {
+  if (!item) return <div className="p-4 text-gray-400">Loading...</div>
+  return (
+    <div className="...">
+      <img src={item.thumbnail} className="..." />
+      <h3>{item.title}</h3>
+      <p>{item.channel}</p>
+      <span>{item.viewCount} views · {item.published}</span>
+    </div>
+  )
 }
-</script>
-```
-- Single File Component (SFC) — `<template>` for HTML + `<script setup>` for logic
-- Refresh button calls `window.__pluginRpc("log.list", {})` to fetch log entries
-- Shows entries as `<ul><li>` list
-- Handles all states: null (initial), empty array, array with entries, loading string, error objects
-- Uses `v-if`/`v-else-if`/`v-else` chain for conditional rendering
 
-**index.js (entry glue):**
-```javascript
-import { createApp } from "vue"
-import LogViewer from "./log-viewer.vue"
-customElements.define("log-viewer", class extends HTMLElement {
-  connectedCallback() { createApp(LogViewer).mount(this) }
+customElements.define("yt-video-card", class extends HTMLElement {
+  _item = null
+  root = null
+  connectedCallback() {
+    this.root = createRoot(this)
+    this._render()
+  }
+  disconnectedCallback() { this.root?.unmount(); this.root = null }
+  set item(data) { this._item = data; this._render() }
+  get item() { return this._item }
+  _render() { if (this.root) this.root.render(<YTVideoCard item={this._item} />) }
 })
 ```
-- Imports the Vue component
-- Defines a Web Component class that mounts a fresh Vue app on `connectedCallback()`
-- `createApp(LogViewer)` — creates a new Vue application instance
-- `.mount(this)` — mounts the Vue app into the custom element as its host
+- Build script entry template wraps this with IIFE imports (createRoot, React)
+- Receives raw video data via `.item` setter from feed-widget
+- Renders thumbnail image, title H3, channel name, view count, published date
+- Pure display — no `__pluginRpc` calls (only receives data)
 
-**Build:** Vite generates a temp config, runs `npx vite build`, deletes the config.
-Output: ~99KB (IIFE format, includes Vue runtime, all self-contained).
+### feed-widget — React WC (Phase 3 feed orchestrator, ~210 lines)
+
+#### plugin.json
+```json
+{ "name": "feed", "description": "Aggregate content", "author": "System", "version": "1.0.0", "ui": "feed-widget", "methods": [] }
+```
+No `run`, no `feeds` — feed IS the aggregator, not a source.
+
+#### Frontend (feed-widget.tsx — ~210 lines)
+- 5-state machine: `loading` (spinner), `error` (system failure), `empty` (no feed sources), `partial` (some errors), `loaded` (all ok)
+- `loading: true` → spinner + "Loading feed..."
+- `error: string` → error message + retry button (calls `loadFeed()`)
+- `items.length === 0 && !loading` → "No content sources yet"
+- Sources with errors get per-plugin error banner: source name + error message
+  - If source's methods include `youtube.auth.login` (or any `.auth.login`): "Sign in" button appears
+  - Sign-in calls `__pluginRpc(source.methods.find(m => m.endsWith(".auth.login")), {})`
+  - On success: calls `loadFeed()` to refresh
+  - On failure: `alert(error)`
+- `CardRenderer` helper:
+  - Uses `customElements.whenDefined(cardTag)` to wait for WC registration
+  - When defined: `document.createElement(cardTag)`, `card.item = item`, appends to container
+  - Auto-cleans container on re-render (sets `container.innerHTML = ""` first)
+
+#### Data flow
+1. App.tsx calls host RPC directly → gets manifests → sets `feedRef.current.manifests = manifests`
+2. feed-widget's setter stores manifests, calls `loadFeed()`
+3. `loadFeed()`: for each manifest with `feeds`, calls `__pluginRpc(feeds.method, {})`
+4. Results merged into flat `items[]` array
+5. `CardRenderer` creates WC for each item, sets `.item`, appends
+
+#### __pluginRpc callers
+- feed-widget calls `__pluginRpc(source.feeds.method, {})` for each feed source
+- feed-widget calls `__pluginRpc(authMethod, {})` when user clicks "Sign in"
+- No host.* prefix — bridge is simple, routes only to plugin subprocesses
 
 ---
 
@@ -711,6 +737,21 @@ Output: ~99KB (IIFE format, includes Vue runtime, all self-contained).
 14. **zero-native** (Vercel Labs) — alternative future option. Zig + system WebView, mobile support, but pre-release (v0.2)
 15. **WebUI (webui-dev)** — interesting but no mobile path. Opens a real browser (Chrome/Firefox), not a WebView. Few KB library
 16. **React + Tailwind + Vite** for the frontend (from the Electrobun template)
+
+### Phase 3 Decisions
+17. **Feed approach is THE approach** — old per-plugin widget cards are dead. App.tsx mounts only `<feed-widget>`. No WebComponentSlot, no plugin cards, no callMethod, no result box.
+18. **No library sharing needed** — one WC class definition is shared across all DOM instances. Framework bundle lives in prototype. Different plugins have different bundles (their own versions). No duplication within the same WC type. Option B (per-plugin shared library) solves a non-problem.
+19. **No `host.*` routing** — feed-widget does NOT call host RPCs. App.tsx calls host directly (`electroview.rpc.request.getPluginManifests({})`) and passes data via `.manifests` setter on the WC DOM element. `__pluginRpc` bridge stays simple: routes only to plugin subprocesses.
+20. **No fallback cards** — postponed. Only cards from plugins are rendered. Items from plugins without `card` field are skipped.
+21. **Data flow via property setters** — App.tsx uses `.manifests` setter, feed-widget uses `.item` setter on each card. Not via RPC, not via events.
+22. **`_item` naming convention** — private backing field with underscore prevents infinite loop in setter. `set item(data) { this._item = data; this._render() }`. Getter: `get item() { return this._item }`.
+23. **Simplified manifest** — `run` replaces `command`+`args`. `feeds` block replaces `frontendComponent`/`frontendFile`/`frontendSlot`. `ui` field for main-UI WC (only feed plugin uses it). No backward compat with old format.
+24. **Path derivation** — frontend file paths NOT in manifest. Derived at runtime: `plugins/<name>/frontend/<tag>.js`. Tag comes from `ui` or `feeds.card` field.
+25. **Feed is a plugin** — `plugins/feed/` with no backend. Users can swap feed implementation by installing a different feed plugin.
+26. **Framework agnostic cards** — each card WC is self-contained IIFE with framework inlined. React, Preact, Vue, Svelte all work.
+27. **No schema** — feed doesn't know or care about item structure. Raw data passes through to card WC. Cards written by the same person as the backend.
+28. **Auth in error banners** — feed-widget shows "Sign in" button in per-plugin error banners when plugin has `.auth.login` method. Calls it, reloads feed on success.
+29. **5 feed states** — loading, system error, empty, partial (some errors), loaded (all ok). Error banners per-plugin.
 
 ### Plugin Design Decisions
 17. **Web Components for frontend plugins** — any framework (React, Vue, Svelte, Angular) can compile to them. Browser standard, no framework lock-in
@@ -819,6 +860,15 @@ Output: ~99KB (IIFE format, includes Vue runtime, all self-contained).
 - **Impact**: TypeScript compilation errors. App wouldn't build.
 - **Status**: ✅ FIXED
 
+### Bug #12 (CRITICAL): Frontend RPC timeout default too short for slow plugins
+- **Location**: `src/mainview/App.tsx`, line 7 — `Electroview.defineRPC({})`
+- **Problem**: `Electroview.defineRPC()` with no `maxRequestTime` defaults to a very short timeout (~1s). The youtube-explorer feed request takes ~2.5s (Innertube.create 1.3s + getHomeFeed 1.2s). The frontend's RPC timer fired before the plugin response arrived. The host received the response and resolved it (visible in terminal logs `handleResponse pending=true`), but the frontend had already thrown "RPC request timed out." — the response was discarded because nobody was listening.
+- **Fix**: Added `maxRequestTime: 20000` to BOTH `BrowserView.defineRPC()` (host, was already 15000) AND `Electroview.defineRPC()` (frontend, was missing). The frontend timeout must be >= all inner timeouts combined.
+- **Impact**: Every `youtube.feed` request silently failed. User saw "Loading feed..." for ~1s then "RPC request timed out." even though the plugin processed the request successfully. Only visible in WebView dev console (F12) — no terminal log.
+- **Lesson**: Every RPC layer must have a timeout >= all the layers below it combined. Always set explicit `maxRequestTime` on EVERY `defineRPC()` call.
+- **Related fixes applied**: readStdout buffer fix (already done), readStderr buffer fix (was still broken — same `lines.pop()` pattern), event queue with knownIds dedup (defeats Bun canary stdin re-delivery bug), feedLoadedRef guard (React double-mount protection)
+- **Status**: ✅ FIXED
+
 ---
 
 ## All Tools, Frameworks, and Concepts Discussed
@@ -890,26 +940,60 @@ Output: ~99KB (IIFE format, includes Vue runtime, all self-contained).
 - [x] Full architecture documented in AGENTS.md
 - [x] Teaching mode, operational rules, and auto-update protocol documented
 
-### ⚠️ IN PROGRESS — Phase 2: Real API Plugins
-- [ ] Planning the first real API plugin (simple public API → fetch → display data)
-- [ ] Choose API: Dog API (dog.ceo), Pokémon API, Joke API, or Weather API
-- [ ] Create plugin directory + manifest
-- [ ] Write backend — fetch from API, serve via JSON-RPC
-- [ ] Write frontend Web Component — display fetched data with UI
-- [ ] Build and test end-to-end
-- [ ] Show real internet data rendered in the app
+### ✅ COMPLETED — Phase 2: YouTube Explorer Plugin
+- [x] youtube-explorer plugin: Bun TS backend + React WC frontend
+- [x] Cookie auth via browser DB discovery (Firefox SQLite, Chrome via sweet-cookie)
+- [x] SAPISID cookie extraction → SAPISIDHASH Authorization header (innertube)
+- [x] ST-* cookie filter (prevents 413 Request Entity Too Large on YouTube API)
+- [x] Per-request `Innertube` instances (no global `tube` — eliminates race conditions)
+- [x] 8s Promise.race timeout on getHomeFeed() and search()
+- [x] Event-based stdin queue with `knownIds` dedup (defeats Bun canary re-delivery bug)
+- [x] `feedLoadedRef` guard in frontend (prevents double loadFeed calls)
+- [x] readStdout + readStderr buffer fix (`lines.pop()`) — prevents stale line re-emission
+- [x] Frontend maxRequestTime: 20000 fix (critical — see Bug #12)
+- [x] Feed renders 22 videos from YouTube home page
+- [x] Search, sign in, sign out, watch video, error states all functional
+
+### ✅ COMPLETED — Phase 3: Unified Feed Architecture
+- [x] Manifest simplified: `run` replaces `command`+`args`, `ui`/`feeds` replaces `frontendComponent`/`frontendFile`/`frontendSlot`
+- [x] Old prototype plugin frontends removed (greet-go, logger-py, joke-fetcher) — no longer build or load
+- [x] Shared types updated: `FeedContrib` interface, `PluginManifest` with `run`/`ui`/`feeds`
+- [x] Host updated: reads `run` field, returns `ui`/`feeds` in manifests, `getPluginFrontend` takes `{ path }`
+- [x] App.tsx simplified: calls host RPC directly for manifests, passes them via `.manifests` setter to feed-widget
+- [x] App.tsx no longer renders plugin cards, no WebComponentSlot, no callMethod, no result display
+- [x] Feed plugin created (`plugins/feed/`): `plugin.json` + `frontend/feed-widget.tsx` with 5-state machine
+- [x] youtube-explorer updated: `run` + `feeds` block, `frontend/yt-video-card.tsx` created
+- [x] Build script updated: React/Preact entry templates with `_item`/`_manifests` setters
+- [x] Auth button in error banners: calls `.auth.login`, reloads feed on success
+- [x] End-to-end test: `bun run build:plugins && vite build && electrobun dev` — feed renders error banners, cards after sign-in
+- [x] Full architecture documented: data flow, WC contract, `_item` pattern, 5 states, feed implementation
 
 ### ❌ PLANNED — Future Phases
 
-**Phase 3: Second API Plugin + Same Media Type**
-- [ ] Add another API plugin producing the same media type
-- [ ] Start designing the unified feed concept
-- [ ] Build a combined feed view for that media type
+**Phase 4: Multi-Source Feed + Feed Types**
+- [ ] Add a second feed source plugin (e.g., mock API, Reddit, or split youtube into multiple contributions)
+- [ ] Fix build script tag resolution: check `ui`/`feeds.card` instead of reading `frontendComponent` (which is gone)
+- [ ] Clean up dead code: `youtube-widget.tsx` still builds but never loads
+- [ ] Add sorting/interleaving across sources
+- [ ] Add feeds-as-array support (a plugin contributes to multiple feed types: `feeds: [{ type: "video", ... }, { type: "short", ... }]`)
+- [ ] Design generalized feed type system
 
-**Phase 4: Media Type Architecture**
-- [ ] Design the category/feed system
-- [ ] Build generalized features for a media type
-- [ ] Plugin registry for feature sharing
+**Phase 5: Plugin Store**
+- [ ] Create plugin registry schema
+- [ ] Add Store tab to App.tsx
+- [ ] Install from URL / one-click install
+- [ ] Plugins registry list RPC handler
+- [ ] UI updates on install
+- [ ] Auto-updates
+- [ ] Plugin signing / verification
+
+**Phase 6: Future / Stretch**
+- [ ] Plugin dependencies
+- [ ] Community submissions system
+- [ ] Hosted remote registry (web server + JSON API)
+- [ ] Plugin store website
+- [ ] Mobile: Tauri or zero-native
+- [ ] More skeletons: WebUI, Tauri, zero-native
 
 **Phase 5: Plugin Store**
 - [ ] Create plugin registry schema
@@ -1017,3 +1101,326 @@ echo '{"id":2,"method":"log.list"}' | python3 plugins/logger-py/main.py
 ### Slots (for frontend components)
 - `main` — primary content area (where plugin widgets display)
 - Future: `sidebar`, `header`, `statusbar`, `settings`
+
+---
+
+## Phase 3 Architecture: Unified Feed
+
+### Core Shift
+Phase 1-2 built per-plugin standalone widgets (each plugin in its own card, rendered by App.tsx).
+Phase 3 replaces this with a SINGLE feed that aggregates items from all content plugins.
+
+The feed itself is a plugin (`plugins/feed/`), swappable by the user. It has no backend — just a
+frontend Web Component (`feed-widget`). App.tsx loads manifests from the host and passes them
+directly to feed-widget via the `.manifests` property setter. Feed-widget then discovers
+feed-contributing plugins, calls their feed methods via `__pluginRpc`, and renders their card WCs.
+
+Each content plugin provides:
+- **Backend**: RPC method that returns feed items (any shape)
+- **Frontend**: A Web Component "card" that renders ONE feed item
+- **Manifest**: Declares `feeds` — what type of content, which RPC method, which card WC
+
+### Architecture Diagram
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  WebView (React + Tailwind + Vite HMR)                          │
+│                                                                  │
+│  App.tsx:                                                        │
+│  1. electroview.rpc.request.getPluginManifests({}) → manifests   │
+│  2. For plugins with feeds.card or ui: injects frontend JS       │
+│     (getPluginFrontend → <script> → customElements.define())     │
+│  3. Renders <feed-widget> as main content                        │
+│  4. Sets feedRef.current.manifests = manifests (pass via setter) │
+│         │                                                        │
+│         ▼                                                        │
+│  ┌─────────────────────────────────────────────────────┐        │
+│  │ <feed-widget> (plugin: feed/)                        │        │
+│  │ set manifests(data) {                                │        │
+│  │   this._manifests = data;                            │        │
+│  │   this.loadFeed(); // trigger re-fetch               │        │
+│  │ }                                                    │        │
+│  │                                                      │        │
+│  │ loadFeed():                                          │        │
+│  │   1. Filter _manifests by has feeds                   │        │
+│  │   2. For each source:                                │        │
+│  │      a. __pluginRpc(source.feeds.method, {})         │        │
+│  │      b. Receives items (any shape, no schema)         │        │
+│  │   3. Merges items (grouped by source order)           │        │
+│  │   4. For each item:                                   │        │
+│  │      cr = document.createElement(source.feeds.card)  │        │
+│  │      cr.item = rawItem (ALL data)                     │        │
+│  │      feedContainer.appendChild(cr)                   │        │
+│  │                                                      │        │
+│  │ States: loading|error|empty|partial|loaded           │        │
+│  │ Error banners per-source with optional Sign In       │        │
+│  └─────────────────────────────────────────────────────┘        │
+│                                                                  │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐                 │
+│  │ yt-card    │  │ (future)   │  │ yt-card    │                 │
+│  │ (React 18) │  │            │  │ (React 18) │                 │
+│  └────────────┘  └────────────┘  └────────────┘                 │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+Each card instance shares its WC class definition — no framework duplication across instances.
+Framework bundle lives in the prototype, shared by all DOM elements of that tag.
+
+### Data Flow (Detailed)
+1. **App.tsx mounts** → `electroview.rpc.request.getPluginManifests({})` → gets array of manifests
+2. **App.tsx loads frontend JS**: for each manifest with `feeds.card` or `ui`:
+   - Calls `electroview.rpc.request.getPluginFrontend({ path: "plugins/x/frontend/y.js" })`
+   - Creates `<script>` element, sets `textContent` = JS code, appends to `<body>`
+   - `customElements.define()` registers the WC globally
+3. **App.tsx passes manifests**: renders `<feed-widget>`, sets `feedRef.current.manifests = manifests`
+   → feed-widget's setter triggers `loadFeed()`
+4. **feed-widget**: for each source with `feeds`:
+   - Calls `__pluginRpc(source.feeds.method, {})` → gets array of items (any JSON shape, no schema)
+5. **Merges** items from all sources into one array (grouped by source, in registration order)
+6. **For each item**: `customElements.whenDefined(source.feeds.card).then(() => {...})`
+   - `card = document.createElement(source.feeds.card)`
+   - `card.item = rawItem` (passes EVERYTHING — no schema)
+   - `feedContainer.appendChild(card)`
+7. **Error handling**: per-source. If a feed method call fails, that source's items are skipped,
+   an error banner is shown (with optional "Sign in" button if source has `.auth.login` method)
+
+### Key Design Decisions
+- **No schema**: Feed doesn't know or care about item structure. Raw data passed through to card WC.
+  Cards are written by the same person who wrote the backend, so they know the data shape.
+- **Feed is a plugin**: Users can swap feed implementation by installing a different feed plugin.
+  The default feed plugin lives at `plugins/feed/`.
+- **Framework agnostic**: Each card WC is a self-contained IIFE with its framework inlined.
+  Multiple instances of the same card share the framework (single WC definition, many DOM elements).
+- **Language agnostic**: Backend plugins can be any language (Go, Python, Bun/TS).
+- **No fallback cards (Phase 3a)**: Cards come from plugins. If a plugin doesn't provide a card,
+  its items are skipped or shown in raw form. Fallback cards postponed.
+- **No library sharing needed**: All instances of the same WC share one framework bundle.
+  Different plugins use different bundles (their own versions). No duplication.
+- **Path derivation**: Frontend file paths are NOT in manifest. Derived at runtime:
+  - Card: `plugins/<name>/frontend/<feeds.card>.js`
+  - UI WC: `plugins/<name>/frontend/<ui>.js`
+- **Custom DOM events for card ↔ feed communication**: Cards dispatch events
+  (`new CustomEvent("item-action", { bubbles: true, composed: true, detail: ... })`) that
+  bubble up through shadow DOMs to the feed widget.
+
+### Simplified Plugin Manifest (Phase 3)
+
+```json
+{
+  "name": "youtube-explorer",
+  "run": "bun plugins/youtube-explorer/main.ts",
+  "methods": ["youtube.auth.status", "youtube.auth.login", "youtube.auth.logout", "youtube.feed"],
+  "version": "1.0.0",
+  "description": "Browse YouTube",
+  "author": "Community",
+  "feeds": {
+    "type": "video",
+    "method": "youtube.feed",
+    "card": "yt-video-card"
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | ✅ | Unique plugin ID |
+| `run` | ❌ | Command to spawn subprocess. Required for backend plugins. |
+| `methods` | ❌ | RPC method prefixes for routing. `"youtube.feed"` matches calls to `"youtube.feed"`. |
+| `version` | ❌ | Semver version. For marketplace and display. |
+| `description` | ❌ | Short description. For display. |
+| `author` | ❌ | Creator name. For display. |
+| `ui` | ❌ | Web Component tag name for a main-UI WC. Path derived: `plugins/<name>/frontend/<tag>.js`. Only the feed plugin uses this. The WC is loaded AND mounted by App.tsx. |
+| `feeds` | ❌ | Contributions to the unified feed. If present, this plugin is a feed source. |
+| `feeds.type` | ✅ (if feeds) | Content type: `"video"`, `"image"`, `"post"`, `"short"`, etc. |
+| `feeds.method` | ✅ (if feeds) | RPC method to call for items. Returns array of any-shaped objects. |
+| `feeds.card` | ❌ | WC tag for rendering one item. Path: `plugins/<name>/frontend/<tag>.js`. If absent, item is skipped (no fallback yet). |
+
+Minimum plugin (backend-only):
+```json
+{ "name": "hello-world", "run": "bun main.ts", "methods": ["hello.world"] }
+```
+
+### Simplified `ui` field meaning (Phase 3)
+In Phase 1-2, `ui` meant a standalone widget card rendered by App.tsx. In Phase 3, `ui` simply means
+"this plugin has a frontend WC that App.tsx should load AND mount as the main app content." The path
+is derived: `plugins/<name>/frontend/<tag>.js`. Only the `feed` plugin uses this. Other plugins use
+`feeds.card` to contribute card WCs (loaded, not mounted by App.tsx — mounted by feed-widget).
+
+### Backward Compatibility
+- Old format (`command`+`args`, `frontendComponent`, `frontendSlot`) is phased out.
+- Host reads ONLY new format. All existing plugin.json files must be updated.
+- Prototype plugins (greet-go, logger-py, joke-fetcher) are NOT updated. They remain as docs but
+  won't work with the Phase 3 host.
+
+### The `feed` Plugin
+
+```
+plugins/feed/
+├── plugin.json         → { name: "feed", ui: "feed-widget" }
+└── frontend/
+    └── feed-widget.tsx  ← orchestrator WC (React via build system)
+```
+
+`plugin.json`:
+```json
+{
+  "name": "feed",
+  "description": "Aggregate content from all your plugins into a single feed",
+  "author": "System",
+  "version": "1.0.0",
+  "ui": "feed-widget",
+  "methods": []
+}
+```
+
+- No `run` — no backend process needed
+- No `feeds` — it IS the feed, not a contributor
+- `ui: "feed-widget"` — App.tsx loads `plugins/feed/frontend/feed-widget.js` and renders `<feed-widget>`
+
+### __pluginRpc Bridge (Phase 3 — Simple, No host.*)
+
+The `__pluginRpc` bridge stays simple: it only routes to plugin subprocesses. No `host.*` prefix.
+
+```javascript
+window.__pluginRpc = async (method, params) => {
+  const res = await electroview.rpc?.request.pluginRequest({ method, params })
+  if (!res.success) throw new Error(res.error || "RPC error")
+  return res.data
+}
+```
+
+App.tsx calls host RPCs directly via `electroview.rpc.request.getPluginManifests({})` and
+`electroview.rpc.request.getPluginFrontend({ path })` — NOT through `__pluginRpc`.
+
+**Why no `host.*`?** The feed-widget doesn't need to call host RPCs. App.tsx (which has
+`electroview` in scope) calls the host directly and passes data to feed-widget via
+the `.manifests` property setter. This keeps `__pluginRpc` simple (one routing path)
+and avoids adding host routing logic to the bridge.
+
+### Per-Instance Framework Sharing (No Action Needed)
+When the feed has 20 `<yt-video-card>` elements, they all share ONE WC class definition.
+The framework (React, etc.) is in the class prototype, not in each DOM element.
+`customElements.define("yt-video-card", YTVideoCard)` registers one class.
+Each `<yt-video-card>` is just an instance — they share the prototype.
+**No build-time sharing optimization needed. Ever.**
+
+### Plugin.json Path Derivation Rules
+
+| Manifest field | Purpose | Frontend path derived |
+|----------------|---------|----------------------|
+| `ui: "feed-widget"` | Main UI WC to mount | `plugins/feed/frontend/feed-widget.js` |
+| `feeds.card: "yt-video-card"` | Card WC to register | `plugins/youtube-explorer/frontend/yt-video-card.js` |
+
+Both are loaded by App.tsx. Card WCs are just registered (not mounted). Feed-widget is mounted.
+
+### Card WC Contract
+
+The feed passes data to card WCs via a `.item` property setter. Each card WC is a Web Component
+wrapping a React component. The card's `.item` setter stores data AND triggers a React re-render.
+
+#### The Pattern (React entry template)
+
+Build script generates this `entry.tsx` for every React/Preact frontend:
+
+```javascript
+import Component from "./yt-video-card.tsx"
+import { createRoot } from "react-dom/client"
+
+customElements.define("yt-video-card", class extends HTMLElement {
+  _item = null           // private storage (backing field for the setter)
+  root = null
+
+  connectedCallback() {
+    this.root = createRoot(this)   // React takes over this element
+    this._render()                  // initial render (item is null → shows "Loading...")
+  }
+
+  disconnectedCallback() {
+    this.root?.unmount()
+    this.root = null
+  }
+
+  // PUBLIC setter — called when feed does: card.item = { ... }
+  set item(data) {
+    this._item = data              // store in private field (NO setter → NO infinite loop)
+    this._render()                 // tell React: re-render with new data!
+  }
+
+  // PUBLIC getter — called when feed reads: const data = card.item
+  get item() {
+    return this._item              // read from private storage
+  }
+
+  _render() {
+    if (!this.root) return
+    this.root.render(<Component item={this._item} />)
+    // When _item is null → component receives item={null}
+    // When _item is data → component receives item={ title: "Cats", ... }
+  }
+})
+```
+
+#### Data Flow (One Item)
+
+1. Feed calls `youtube.feed` → gets array of items
+2. Feed loops: `for (const item of items)`
+3. `document.createElement("yt-video-card")` → browser creates WC → `connectedCallback()` runs
+   - React mount: `createRoot(this)` → `_render()` → `<Component item={null} />` → shows "Loading..."
+4. `card.item = item` → setter fires:
+   - `this._item = item` — stores the data
+   - `this._render()` — `root.render(<Component item={{ title: "Cats", ... }} />)`
+   - React re-renders component with real data → shows title, thumbnail, etc.
+5. `feedContainer.appendChild(card)` — adds to page display
+
+API calls = number of PLUGINS (not items). One `youtube.feed` call returns 30 items → 30 cards, each with `.item` set to one array element.
+
+#### Why `_item` (underscore)?
+
+A setter cannot store data in a variable with the same name (`item`), because `this.item = data`
+inside a `set item()` would call itself forever (infinite loop). So we separate:
+
+| Name | Role | Type |
+|------|------|------|
+| `item` (setter) | PUBLIC — called by feed | Function (runs on `=`) |
+| `_item` | PRIVATE storage | Regular variable (no setter) |
+| `item` (getter) | PUBLIC — read by feed | Function (runs on read) |
+
+The underscore `_` is a naming convention meaning "internal, don't touch directly."
+
+#### Impact on Old Widgets
+
+Old widgets (greet-widget, log-viewer, youtube-widget) also get the `.item` setter. It's harmless —
+`_item` stays null forever (no one calls `card.item = ...` on them), so their React component
+receives `item={null}` and ignores it. The widget continues calling `window.__pluginRpc()` directly
+as before. No behavioral change.
+
+#### Framework-Specific Entry Templates
+
+The `.item` setter pattern applies to React and Preact (the two JSX frameworks). Vue/Svelte entries
+keep their current pattern. When someone needs a Vue/Svelte feed card, the setter can be added to
+those entries.
+
+#### Build Script Tag Resolution (Needs Fix)
+
+The build script currently tries to read `frontendComponent` from plugin.json — this field is gone
+in Phase 3. It falls back to filename without extension (e.g., `yt-video-card.tsx` → tag
+`"yt-video-card"`). This works coincidentally because:
+- `feeds.card: "yt-video-card"` in manifest matches the filename
+- The fallback produces the correct tag
+
+**Fix needed**: Check `ui` and `feeds.card` fields first, fall back to filename if neither found.
+Currently deferred — works by coincidence but should be explicit.
+
+### Phase 3 Implementation — DONE
+
+All 8 steps implemented and tested end-to-end. See Progress section for details.
+
+Key differences from the original plan:
+- **No `host.*` routing** — Step 3 was changed: `__pluginRpc` bridge was NOT extended with
+  `host.` prefix. App.tsx calls host RPCs directly via `electroview.rpc.request`.
+  Manifests are passed to feed-widget via `.manifests` setter, not via feed-widget calling host.
+- **No separate `getPluginFrontend` handler with `name` param** — Instead takes `{ path }`
+  parameter for more explicit path derivation.
+- **`customElements.whenDefined()`** — Used in CardRenderer instead of `customElements.get()`
+  to handle race conditions where card WC isn't registered yet.
+- **Auth button in error banners** — Not in original plan. Added during implementation:
+  feed-widget shows "Sign in" button when source has `.auth.login` method.

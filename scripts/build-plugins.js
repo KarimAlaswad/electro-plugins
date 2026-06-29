@@ -27,11 +27,19 @@ const FRAMEWORKS = {
         `import { createRoot } from "react-dom/client"`,
         `customElements.define("${tag}", class extends HTMLElement {`,
         `  root = null`,
+        `  _item = null`,
+        `  _manifests = null`,
         `  connectedCallback() {`,
-        `    try { this.root = createRoot(this); this.root.render(<Component />) }`,
-        `    catch (e) { this.innerHTML = \`<p style="color:red;font-size:12px;">WC error: \${e}</p>\` }`,
+        `    try { this.root = createRoot(this); this._render() }`,
+        `    catch (e) { this.innerHTML = \`<p style="color:red">WC error: \${e}</p>\` }`,
         `  }`,
         `  disconnectedCallback() { this.root?.unmount(); this.root = null }`,
+        `  set item(d) { this._item = d; this._render() }`,
+        `  set manifests(d) { this._manifests = d; this._render() }`,
+        `  _render() {`,
+        `    if (!this.root) return`,
+        `    this.root.render(<Component item={this._item} manifests={this._manifests} />)`,
+        `  }`,
         `})`,
       ].join("\n"),
   },
@@ -40,18 +48,26 @@ const FRAMEWORKS = {
     detect: ['"preact"', "'preact'", '"preact/hooks"', "'preact/hooks'"],
     import: 'import preact from "@preact/preset-vite"',
     plugin: "preact()",
-    entry: (tag, file) => [
-      `import "./style.css"`,
-      `import Component from "./${file}"`,
-      `import { render } from "preact"`,
-      `customElements.define("${tag}", class extends HTMLElement {`,
-      `  connectedCallback() {`,
-      `    try { render(<Component />, this) }`,
-      `    catch (e) { this.innerHTML = \`<p style="color:red;font-size:12px;">WC error: \${e}</p>\` }`,
-      `  }`,
-      `  disconnectedCallback() { render(null, this) }`,
-      `})`,
-    ].join("\n"),
+    entry: (tag, file) =>
+      [
+        `import "./style.css"`,
+        `import Component from "./${file}"`,
+        `import { render } from "preact"`,
+        `customElements.define("${tag}", class extends HTMLElement {`,
+        `  _item = null`,
+        `  _manifests = null`,
+        `  connectedCallback() {`,
+        `    try { this._render() }`,
+        `    catch (e) { this.innerHTML = \`<p style="color:red">WC error: \${e}</p>\` }`,
+        `  }`,
+        `  disconnectedCallback() { render(null, this) }`,
+        `  set item(d) { this._item = d; this._render() }`,
+        `  set manifests(d) { this._manifests = d; this._render() }`,
+        `  _render() {`,
+        `    render(<Component item={this._item} manifests={this._manifests} />, this)`,
+        `  }`,
+        `})`,
+      ].join("\n"),
   },
 };
 
@@ -99,9 +115,8 @@ for (const dir of frontends) {
     // Read plugin.json for the Web Component tag name
     const pluginDir = join(dir, "..");
     const pluginJsonPath = join(pluginDir, "plugin.json");
-    const tag = existsSync(pluginJsonPath)
-      ? JSON.parse(await Bun.file(pluginJsonPath).text()).frontendComponent
-      : name;
+    const manifest = JSON.parse(await Bun.file(pluginJsonPath).text())
+    const tag = manifest.frontendComponent || manifest.ui || manifest.feeds?.card || name
 
     // Temp files
     const configFile = join(dir, ".vite.config.mjs");

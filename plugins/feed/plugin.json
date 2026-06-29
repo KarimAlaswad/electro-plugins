@@ -1,0 +1,7 @@
+{
+  "name": "feed",
+  "description": "Aggregate content from all your plugins into a single feed",
+  "author": "Me",
+  "version": "1.0.0",
+  "ui": "feed-widget"
+}
