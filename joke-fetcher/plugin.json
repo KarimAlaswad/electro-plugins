@@ -1,9 +1,0 @@
-{
-  "name": "joke-fetcher",
-  "version": "1.0.0",
-  "description": "Random jokes from JokeAPI",
-  "author": "Me",
-  "command": "bun",
-  "args": ["plugins/joke-fetcher/main.ts"],
-  "methods": ["joke.random"],
-}

@@ -1,0 +1,7 @@
+{
+  "name": "yt-auth",
+  "version": "1.0.0",
+  "run": "bun plugins/youtube/plugins/yt-auth/main.ts",
+  "hooks": ["auth"],
+  "methods": ["login", "logout", "status"]
+}

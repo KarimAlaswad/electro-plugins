@@ -1,0 +1,13 @@
+{
+  "name": "yt-feed",
+  "version": "1.0.0",
+  "run": "bun plugins/youtube/plugins/yt-feed/main.ts",
+  "hooks": ["feed.video"],
+  "methods": ["feed"],
+  "feeds": [
+    {
+      "type": "video",
+      "card": "yt-video-card"
+    }
+  ]
+}

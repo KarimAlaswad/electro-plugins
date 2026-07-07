@@ -1,8 +1,7 @@
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect } from "react"
 import { Electroview } from "electrobun/view"
 import type { PluginManifest } from "../shared/types"
 
-// -- RPC bridge (same as before, except Step 3 change to __pluginRpc) --
 const electroview = new Electroview({
   rpc: Electroview.defineRPC({
     maxRequestTime: 20000,
@@ -10,71 +9,93 @@ const electroview = new Electroview({
   }),
 })
 
+// -- Globals --
 window.__pluginRpc = async (method: string, params: any) => {
-  const res = await electroview.rpc?.request.pluginRequest({ method, params });
-  if (!res.success) throw new Error(res.error || "RPC error");
-  return res.data;
-};
+  const res = await electroview.rpc?.request.pluginRequest({ method, params })
+  if (!res.success) throw new Error(res.error || "RPC error")
+    return res.data 
+}
+
+window.resolveHook = async (hook: string) => {
+  const res = await electroview.rpc.request.resolveHook({ hook })
+  if (!res.success) throw new Error(res.error || "Hook resolution failed")
+  return res.data
+}
+
+window.callHook = async (hook: string, methodOrArgs: any, args?: any) => {
+  const method = args !== undefined ? methodOrArgs : undefined
+  const params = args !== undefined ? args : methodOrArgs
+  const res = await electroview.rpc.request.callHook({ hook, method, params })
+  if (!res.success) throw new Error(res.error || "callHook failed")
+  return res.data 
+}
 
 export default function App() {
   const [manifests, setManifests] = useState<PluginManifest[]>([])
-  const [feedPlugin, setFeedPlugin] = useState<PluginManifest | null>(null)
-  const manifestsRef = useRef<PluginManifest[]>([])
 
-  // On mount: load manifests => load frontneds => mount feed
-  useEffect(() => { init() }, [])
+  useEffect(() => {
+    init().catch(e => {
+      console.error("[app] init() failed:", e)
+      const c = document.getElementById("feed-container")
+      if (c) c.innerHTML = `<p style="color:red;padding:20px;font-family:monospace">Init error: ${e.message}</p>`
+    })
+  }, [])
   async function init() {
-    // Step 1: Get all plugin manifests
+    console.log("[app] init: fetching manifests...")
     const all: PluginManifest[] = await electroview.rpc.request.getPluginManifests({})
+    console.log("[app] manifests received:", all.map(m => `${m.name}${m.feeds?.length ? " (feeds)" : ""}${m.ui ? " (ui:"+m.ui+")" : ""}${m.hooks?.length ? " (hooks:"+m.hooks+")" : ""}`))
     setManifests(all)
-    manifestsRef.current = all
 
-    // Step 2: Load frontend JS for every plugin that has a frontend file
+    const loaded = new Set<string>()
+    const uiPlugins: PluginManifest[] = []
     for (const m of all) {
-      // Load card WCs (plugins with feeds.card)
-      if (m.feeds?.card) {
-        const path = `plugins/${m.name}/frontend/${m.feeds.card}.js`
-        await loadFrontend(path)
+      for (const f of (m.feeds || [])) {
+        if (f.card && !loaded.has(f.card)) {
+          loaded.add(f.card)
+          console.log(`[app] loading card: ${f.card}`)
+          await loadFrontend(`build/plugins/${f.card}.js`)
+        }
       }
-      // Load AND mount the main-UI WC (only the feed plugin)
       if (m.ui) {
-        setFeedPlugin(m)
-        const path = `plugins/${m.name}/frontend/${m.ui}.js`
-        await loadFrontend(path)
+        uiPlugins.push(m)
+        if (!loaded.has(m.ui)) {
+          loaded.add(m.ui)
+          console.log(`[app] loading ui: ${m.ui}`)
+          await loadFrontend(`build/plugins/${m.ui}.js`)
+        }
       }
     }
+
+    // Create WC elements directly, outside React's VDOM
+    const container = document.getElementById("feed-container")
+    if (container) {
+      container.innerHTML = ""
+      for (const m of uiPlugins) {
+        const tag = m.ui!
+        await customElements.whenDefined(tag)
+        const el = document.createElement(tag)
+        el.manifests = all
+        container.appendChild(el)
+      }
+    }
+    console.log("[app] init complete, ui plugins:", uiPlugins.map(p => p.ui).join(", ") || "none")
   }
 
-  // Helper: inject a JS file as a <script> tag
   async function loadFrontend(path: string) {
-    const { code } = await electroview.rpc.request.getPluginFrontend({ path })
+    const res = await electroview.rpc.request.getPluginFrontend({ path })
+    if (res.error) throw new Error(`loadFrontend(${path}): ${res.error}`)
     const script = document.createElement("script")
-    script.textContent = code
+    script.textContent = res.code
     document.body.appendChild(script)
   }
-
-  // Step 3: Mount the feed-widget once its frontend is loaded
-  useEffect(() => {
-    if (!feedPlugin?.ui) return
-    const tag = feedPlugin.ui
-    customElements.whenDefined(tag).then(() => {
-      const existing = document.getElementById("feed-container")
-      if (!existing) return
-      existing.innerHTML = ""
-      const el = document.createElement(tag)
-      el.manifests = manifestsRef.current 
-      existing.appendChild(el)
-    })
-  }, [feedPlugin])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-500 to-purple-600">
       <div className="container mx-auto px-4 py-10 max-w-5xl">
         <h1 className="text-5xl font-bold text-center text-white mb-10 drop-shadow-lg">
           Electro Plugins
-        </h1>
+        </h1> 
         <div id="feed-container" />
-        {/* feed-widget is mounted here by the useEffect above */}
       </div>
     </div>
   )

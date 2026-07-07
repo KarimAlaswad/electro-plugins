@@ -1,0 +1,15 @@
+{
+  "name": "peertube",
+  "version": "1.0.0",
+  "description": "Peertube plugin",
+  "author": "Me",
+  "run": "bun plugins/peertube/main.ts",
+  "hooks": ["feed.video"],
+  "methods": ["list"],
+  "feeds": [
+    {
+      "type": "video",
+      "card": "peertube-card"
+    }
+  ]
+}

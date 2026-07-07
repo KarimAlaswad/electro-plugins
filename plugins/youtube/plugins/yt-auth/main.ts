@@ -1,10 +1,5 @@
 import { createInterface } from "readline";
 import { Innertube, UniversalCache } from "youtubei.js";
-import {
-  getCookies,
-  toCookieHeader,
-  ALL_PROFILES,
-} from "@steipete/sweet-cookie";
 import { join } from "path";
 import {
   existsSync,
@@ -16,10 +11,11 @@ import {
 } from "fs";
 import { Database } from "bun:sqlite";
 import { platform, homedir } from "os";
+import { getCookies, toCookieHeader } from "@steipete/sweet-cookie";
 
 let cookieStr: string | null = null;
 let accountName: string | null = null;
-const cookieFile = join(import.meta.dir, ".youtube-cookie");
+const cookieFile = join(import.meta.dir, "..", "..", ".youtube-cookie");
 const HOME = homedir();
 const OS = platform();
 
@@ -39,28 +35,37 @@ function loadCookie(): string | null {
   } catch {}
   return null;
 }
-
 function saveCookie(cookie: string) {
   writeFileSync(cookieFile, cookie, "utf-8");
 }
-
 function deleteCookie() {
   try {
     if (existsSync(cookieFile)) unlinkSync(cookieFile);
   } catch {}
 }
 
-// -- Dynamic browser cookie discovery --
-function getSearchRoots(): string[] {
-  if (OS === "linux") {
-    return [join(HOME, ".config"), join(HOME, ".local", "share")];
-  } else if (OS === "darwin") {
-    return [join(HOME, "Library", "Application Support")];
-  } else {
-    return [join(HOME, "AppData", "Local"), join(HOME, "AppData", "Roaming")];
+const cached = loadCookie();
+if (cached) {
+  try {
+    const tube = await Innertube.create({
+      cookie: cached,
+      cache: new UniversalCache(true),
+    });
+    const info = await tube.account.getInfo();
+    const item = info.contents?.contents?.find((c: any) => c.is_selected);
+    if (item) accountName = item.account_name?.text || null;
+    cookieStr = cached;
+  } catch {
+    deleteCookie();
   }
 }
 
+function getSearchRoots(): string[] {
+  if (OS === "linux")
+    return [join(HOME, ".config"), join(HOME, ".local", "share")];
+  if (OS === "darwin") return [join(HOME, "Library", "Application Support")];
+  return [join(HOME, "AppData", "Local"), join(HOME, "AppData", "Roaming")];
+}
 function runFind(
   roots: string[],
   fileName: string,
@@ -85,20 +90,17 @@ function runFind(
           .toString()
           .trim()
           .split("\n")
-          .filter(Boolean)) {
+          .filter(Boolean))
           results.push(line);
-        }
       }
     } catch {}
   }
   return results;
 }
-
 interface CookieEntry {
   name: string;
   value: string;
 }
-
 function readFirefoxCookies(filePath: string): CookieEntry[] {
   try {
     const tmpDir = join(HOME, ".cache", "yt-plugin");
@@ -120,14 +122,11 @@ function readFirefoxCookies(filePath: string): CookieEntry[] {
     return [];
   }
 }
-
 async function discoverAllCookies(): Promise<CookieEntry[] | null> {
   const all: CookieEntry[] = [];
   const seen = new Set<string>();
   const roots = getSearchRoots();
   const hasSapisid = () => all.some((c) => c.name === "SAPISID");
-
-  // Phase 1: Firefox-type (unencrypted SQLite)
   const ffFiles = runFind(roots, "cookies.sqlite", 4);
   for (const file of ffFiles) {
     for (const c of readFirefoxCookies(file)) {
@@ -141,8 +140,6 @@ async function discoverAllCookies(): Promise<CookieEntry[] | null> {
     if (hasSapisid()) break;
   }
   if (hasSapisid()) return all;
-
-  // Phase 2: Chrome-type via sweet-cookie (standard browsers)
   try {
     const sc = await getCookies({
       url: "https://www.youtube.com",
@@ -158,8 +155,6 @@ async function discoverAllCookies(): Promise<CookieEntry[] | null> {
     }
   } catch {}
   if (hasSapisid()) return all;
-
-  // Phase 3: Chrome-type via Login Data Discovery (extra Chromium browsers)
   const loginDataFiles = runFind(roots, "Login Data", 4);
   const triedProfiles = new Set<string>();
   for (const file of loginDataFiles) {
@@ -182,67 +177,17 @@ async function discoverAllCookies(): Promise<CookieEntry[] | null> {
       }
     } catch {}
   }
-  if (hasSapisid()) return all;
-
   if (all.length === 0) return null;
   return all;
 }
 
-// -- Startup --
-const cached = loadCookie();
-if (cached) {
-  try {
-    const tube = await Innertube.create({
-      cookie: cached,
-      cache: new UniversalCache(true),
-    });
-    const info = await tube.account.getInfo();
-    const item = info.contents?.contents?.find((c: any) => c.is_selected);
-    if (item) accountName = item.account_name?.text || null;
-    cookieStr = cached;
-  } catch {
-    deleteCookie();
-  }
-}
-
 async function handleRequest(request: any) {
   const method = request.method;
-  const params = request.params || {};
   const reqId = request.id;
-
   try {
-    if (method === "youtube.search") {
-      if (!cookieStr) {
-        send(reqId, null, "Not authenticated");
-        return;
-      }
-      const tube = await Innertube.create({
-        cookie: cookieStr,
-        cache: new UniversalCache(true),
-      });
-      const search = await Promise.race([
-        tube.search(params.query),
-        new Promise<any>((_, reject) =>
-          setTimeout(() => reject(new Error("timeout")), 8000),
-        ),
-      ]);
-      const results = (search.videos || [])
-        .slice(0, params.limit || 10)
-        .map((v: any) => ({
-          title: v.title?.text || "Untitled",
-          videoId: v.id,
-          channel: v.author?.name || "Unknown",
-          views: v.views || v.short_view_count?.toString() || "",
-          duration: v.duration?.seconds || 0,
-          thumbnail: v.thumbnails?.[0]?.url || "",
-        }));
-      send(reqId, results);
-    } else if (method === "youtube.auth.status") {
-      send(reqId, {
-        loggedIn: !!cookieStr,
-        accountName,
-      });
-    } else if (method === "youtube.auth.login") {
+    if (method === "status") {
+      send(reqId, { loggedIn: !!cookieStr, accountName });
+    } else if (method === "login") {
       const entries = await discoverAllCookies();
       if (!entries) {
         send(
@@ -267,63 +212,11 @@ async function handleRequest(request: any) {
         accountName = null;
       }
       send(reqId, { success: true, accountName });
-    } else if (method === "youtube.auth.logout") {
+    } else if (method === "logout") {
       deleteCookie();
       cookieStr = null;
       accountName = null;
       send(reqId, { success: true });
-    } else if (method === "youtube.feed") {
-      if (!cookieStr) {
-        send(reqId, null, "Not authenticated");
-        return;
-      }
-      const tube = await Innertube.create({
-        cookie: cookieStr,
-        cache: new UniversalCache(true),
-      });
-      const home = await Promise.race([
-        tube.getHomeFeed(),
-        new Promise<any>((_, reject) =>
-          setTimeout(() => reject(new Error("timeout")), 8000),
-        ),
-      ]);
-      const grid = home.contents;
-      const videos: any[] = [];
-      for (const section of grid?.contents || []) {
-        let items: any[] = [];
-        if (
-          section.type === "RichItem" &&
-          section.content?.type === "LockupView" &&
-          section.content?.content_type === "VIDEO"
-        )
-          items = [section.content];
-        else if (
-          section.type === "RichSection" &&
-          section.content?.type === "RichShelf" &&
-          section.content?.contents
-        )
-          items = section.content.contents
-            .filter(
-              (i: any) =>
-                i.content?.type === "LockupView" &&
-                i.content?.content_type === "VIDEO",
-            )
-            .map((i: any) => i.content);
-        for (const v of items) {
-          const md = v.metadata || {};
-          const parts = md.metadata?.metadata_rows?.[0]?.metadata_parts || [];
-          videos.push({
-            title: md.title?.text || "Untitled",
-            videoId: v.content_id,
-            channel: parts[0]?.text?.text || "",
-            views: parts[1]?.text?.text || "",
-            published: parts[2]?.text?.text || "",
-            thumbnail: v.content_image?.image?.[0]?.url || "",
-          });
-        }
-      }
-      const results = videos.slice(0, params.limit || 30);
-      send(reqId, results);
     } else {
       send(reqId, null, "Method not found: " + method);
     }
@@ -334,29 +227,18 @@ async function handleRequest(request: any) {
 
 const rl = createInterface({ input: process.stdin });
 const queue: string[] = [];
-const knownIds = new Set<number>();
 let busy = false;
 rl.on("line", (line: string) => {
   const trimmed = line.trim();
   if (!trimmed) return;
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (parsed.id != null) {
-      if (knownIds.has(parsed.id)) return;
-      knownIds.add(parsed.id);
-    }
-    queue.push(line);
-    if (!busy) processNext();
-  } catch {
-    send(null, null, "Parse error");
-  }
+  queue.push(trimmed);
+  if (!busy) processNext();
 });
 async function processNext() {
   busy = true;
   while (queue.length > 0) {
-    const line = queue.shift()!;
     try {
-      await handleRequest(JSON.parse(line));
+      await handleRequest(JSON.parse(queue.shift()!));
     } catch {
       send(null, null, "Parse error");
     }

@@ -2,9 +2,9 @@ import { useState, useEffect, useRef } from "react"
 
 // -- What a feed source looks like (derived from PluginManifest.feeds) --
 interface FeedSource {
-  name: string    // plugin name, e.g. "youtube-explorer"
+  name: string    // plugin name, e.g. "yt-feed"
   card: string    // WC tag, e.g. "yt-video-card"
-  method: string  // RPC method, e.g. "youtube.feed"
+  method: string  // bare method name, e.g. "feed"
   methods: string[]
 }
 
@@ -39,19 +39,22 @@ export default function Feed({ manifests }: FeedProps) {
   }, [manifests])
 
   async function loadFeed() {
+    console.log("[feed] loadFeed: manifests.length =", manifests?.length ?? 0)
     setLoading(true)
     setSystemError(null)
     setErrors({})
 
     // Step 1: Filter manifests to plugins that have feeds
-    const feedSources: FeedSource[] = manifests
-      .filter((m: any) => m.feeds)
-      .map((m: any) => ({
+    const feedSources: FeedSource[] = manifests 
+      .filter((m: any) => m.feeds && m.feeds.length > 0)
+      .flatMap((m: any) => m.feeds.map((f: any) => ({
         name: m.name,
-        card: m.feeds.card,
-        method: m.feeds.method,
+        card: f.card,
+        method: f.method || m.methods?.[0],
         methods: m.methods || [],
-      }))
+      })))
+
+    console.log("[feed] sources found:", feedSources.map(s => `${s.name}.${s.method} -> ${s.card}`).join(", ") || "none")
     setSources(feedSources)
 
     // Step 2: If no sources, stop
@@ -60,38 +63,95 @@ export default function Feed({ manifests }: FeedProps) {
       return 
     }
 
-    // Step 3: Call each source's feed method (all at once)
+    // -- Safety timer: force-resolve if nothing settles within 20s --
+    const safetyTimer = setTimeout(() => {
+      console.log("[feed] SAFETY TIMEOUT FIRED at 20s — forcing resolution")
+      setLoading(false)
+      forceClearLoading()
+    }, 20000)
+
+    // Step 3: Call each source's feed method (all at once), with frontend timeout
+    const FEED_TIMEOUT = 15000
     const results = await Promise.allSettled(
-      feedSources.map(s =>
-        window.__pluginRpc(s.method, {}).then((data: any) => ({
-          name: s.name,
-          items: Array.isArray(data) ? data : []
-        }))
-      )
+      feedSources.map(s => {
+        const rpcMethod = s.name + "." + s.method
+        console.log(`[feed] calling __pluginRpc("${rpcMethod}", {})`)
+        console.log(`[feed] __pluginRpc type:`, typeof window.__pluginRpc)
+        return new Promise((resolve, reject) => {
+          const timeoutId = setTimeout(() => {
+            console.log(`[feed] per-source timeout fired for ${rpcMethod}`)
+            reject(new Error(`Frontend timeout (${FEED_TIMEOUT}ms): ${rpcMethod}`))
+          }, FEED_TIMEOUT)
+          const rpcPromise = window.__pluginRpc(rpcMethod, {})
+          console.log(`[feed] __pluginRpc returned promise:`, typeof rpcPromise?.then)
+          rpcPromise.then(
+            (data: any) => {
+              clearTimeout(timeoutId)
+              console.log(`[feed] "${rpcMethod}" success: ${Array.isArray(data) ? data.length : typeof data} items`)
+              resolve({ name: s.name, items: Array.isArray(data) ? data : [] })
+            },
+            (err: any) => {
+              clearTimeout(timeoutId)
+              console.log(`[feed] "${rpcMethod}" rejection:`, err?.message || err)
+              reject(err)
+            },
+          )
+        })
+      })
     )
 
-    // Step 4: Separate successes and failures
+    clearTimeout(safetyTimer)
+
+    // Step 4: Separate successes and failures, then shuffle
     const newItems: FeedItem[] = []
     const newErrors: Record<string, string> = {}
 
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i]
-      const source = feedSources[i]
+    try {
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i]
+        const source = feedSources[i]
 
-      if (result.status === "fulfilled") {
-        for (const item of result.value.items) {
-          newItems.push({ plugin: source, data: item })
+        if (result.status === "fulfilled") {
+          for (const item of result.value.items) {
+            newItems.push({ plugin: source, data: item})
+          }
+        } else {
+          const msg = result.reason?.message || "Unknown error"
+          console.error(`[feed] "${source.name}.${source.method}" failed:`, msg)
+          newErrors[source.name] = msg
         }
-      } else {
-        newErrors[source.name] = result.reason?.message || "Unknown error"
       }
-    }
 
-    // Step 5: Update state (only if still mounted)
-    if (mountedRef.current) {
+      // Fisher-Yates shuffle
+      for (let i = newItems.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [newItems[i], newItems[j]] = [newItems[j], newItems[i]]
+      }
+
+      // Step 5: Update state unconditionally (ignore mountedRef — 
+      //         if component was unmounted/remounted the new ref
+      //         will pick up, and React handles the rest)
+      console.log("[feed] setting state: items=", newItems.length, "errors=", Object.keys(newErrors).length, "loading=false")
       setItems(newItems)
       setErrors(newErrors)
       setLoading(false)
+      console.log("[feed] state set OK")
+    } catch (e) {
+      console.error("[feed] exception in loadFeed processing:", e)
+    }
+
+    // DOM-level kill switch in case React state doesn't take effect
+    forceClearLoading()
+  }
+
+  function forceClearLoading() {
+    const container = document.getElementById("feed-container")
+    if (container) {
+      const loadingEl = container.querySelector("p")
+      if (loadingEl && loadingEl.textContent === "Loading feed...") {
+        console.log("[feed] DOM kill switch: removing loading text")
+        loadingEl.textContent = "Feed loaded (DOM recovery)"
+      }
     }
   }
 
@@ -142,7 +202,8 @@ export default function Feed({ manifests }: FeedProps) {
       <div className="flex justify-between items-center mb-4">
         <p className="text-white text-sm">
           {items.length} item{items.length !== 1 ? "s" : ""}
-          {hasErrors && ` (${Object.keys(errors).length} source${Object.keys(errors).length !== 1 ? "s" : ""} failed)`}
+          {hasErrors &&
+            ` (${Object.keys(errors).length} source${Object.keys(errors).length !== 1 ? "s" : ""} failed)`}
         </p>
         <button
           onClick={loadFeed}
@@ -154,9 +215,11 @@ export default function Feed({ manifests }: FeedProps) {
       </div>
 
       {/* Error banners per plugin */}
+      {/* Error banners per plugin */}
       {Object.entries(errors).map(([name, msg]) => {
-        const source = sources.find(s => s.name === name)
-        const loginMethod = source?.methods.find(m => m.endsWith(".auth.login"))
+        const authPlugin = manifests?.find((m: any) =>
+          m.methods?.includes("login"),
+        );
 
         return (
           <div
@@ -165,11 +228,11 @@ export default function Feed({ manifests }: FeedProps) {
           >
             <p className="text-yellow-800 font-medium text-sm">{name}</p>
             <p className="text-yellow-700 text-xs mt-1">{msg}</p>
-            {loginMethod && (
+            {authPlugin && (
               <button
                 onClick={async () => {
                   try {
-                    await window.__pluginRpc(loginMethod, {});
+                    await window.__pluginRpc(authPlugin.name + ".login", {});
                     loadFeed();
                   } catch (e: any) {
                     alert("Sign in failed: " + e.message);
@@ -199,7 +262,7 @@ export default function Feed({ manifests }: FeedProps) {
         ))
       )}
     </div>
-  )
+  );
 }
 
 // -- Helper component: creates a card WC and passes data to it --
@@ -223,5 +286,5 @@ function CardRenderer({ plugin, data }: { plugin: FeedSource; data: any }) {
     return () => { container.innerHTML = "" }
   }, [plugin.card, data])
 
-  return <div ref={ref} className="mb-2" />
+  return <div ref={ref} className="mb-2 cursor-pointer" />
 }

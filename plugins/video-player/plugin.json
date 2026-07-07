@@ -1,0 +1,8 @@
+{
+  "name": "video-player",
+  "version": "1.0.0",
+  "run": "bun plugins/video-player/main.ts",
+  "hooks": ["player"],
+  "methods": ["load"],
+  "ui": "player-modal"
+}

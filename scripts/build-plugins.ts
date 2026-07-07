@@ -1,9 +1,14 @@
-import { $ } from "bun"
-import { existsSync, readdirSync, unlinkSync, writeFileSync, statSync } from "fs"
-import { join } from "path"
+import { $ } from "bun";
+import {
+  existsSync,
+  readdirSync,
+  unlinkSync,
+  writeFileSync,
+  statSync,
+  mkdirSync,
+} from "fs";
+import { join } from "path";
 
-// -- Framework map: extension -> Vite plugin config --
-// Add new frameworks here. That's all you need to do.
 const FRAMEWORKS = {
   vue: {
     extensions: ["vue"],
@@ -71,68 +76,87 @@ const FRAMEWORKS = {
   },
 };
 
-const extMap = {}
+const extMap = {};
 for (const [name, fw] of Object.entries(FRAMEWORKS)) {
   for (const ext of fw.extensions) {
-    if (!extMap[ext]) extMap[ext] = []
-    extMap[ext].push(name)
+    if (!extMap[ext]) extMap[ext] = [];
+    extMap[ext].push(name);
   }
 }
 
-
 function needsRebuild(input, output) {
-  if (!existsSync(output)) return true
-  return statSync(output).mtime < statSync(input).mtime 
+  if (!existsSync(output)) return true;
+  return statSync(output).mtime < statSync(input).mtime;
 }
 
-const frontends = readdirSync("plugins")
-  .map(name => join("plugins", name, "frontend"))
-  .filter(dir => existsSync(dir) && readdirSync(dir).length > 0)
+function findPluginDirs(dir) {
+  const dirs = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (existsSync(join(path, "plugin.json"))) dirs.push(path);
+      dirs.push(...findPluginDirs(path));
+    }
+  }
+  return dirs;
+}
 
-for (const dir of frontends) {
-  const files = readdirSync(dir)
+const buildDir = join(process.cwd(), "build", "plugins");
+if (!existsSync(buildDir)) mkdirSync(buildDir, { recursive: true });
 
-  for (const file of files) {
-    const ext = file.split(".").pop()
-    const candidates = extMap[ext]
-    if (!candidates) continue
-    const content = ext === "vue" || ext === 'svelte' ? '' : await Bun.file(join(dir, file)).text()
-    const fwName = candidates.length === 1
-      ? candidates[0]
-      : candidates.find(n => FRAMEWORKS[n].detect?.some(s => content.includes(s))) ?? candidates[0]
-    const fw = FRAMEWORKS[fwName]
+const pluginDirs = findPluginDirs("plugins");
+for (const dir of pluginDirs) {
+  const manifest = JSON.parse(await Bun.file(join(dir, "plugin.json")).text());
+  const tags = new Set();
+  if (manifest.ui) tags.add(manifest.ui);
+  if (manifest.feeds)
+    for (const f of manifest.feeds) if (f.card) tags.add(f.card);
 
-    const name = file.replace("." + ext, "");
-    const input = join(dir, file);
-    const output = join(dir, name + ".js");
-    if (!needsRebuild(input, output)) {
-      console.log(` skip ${file}`);
+  for (const tag of tags) {
+    let file = null;
+    let ext = "";
+    for (const candidate of ["tsx", "jsx", "vue", "svelte"]) {
+      const p = join(dir, `${tag}.${candidate}`);
+      if (existsSync(p)) {
+        file = p;
+        ext = candidate;
+        break;
+      }
+    }
+    if (!file) {
+      console.log(`  skip ${tag} (source not found in ${dir})`);
       continue;
     }
 
-    console.log(`vite: ${join(dir, file)} =>${output}`);
+    const output = join(buildDir, tag + ".js");
+    if (!needsRebuild(file, output)) {
+      console.log(`  skip ${tag}`);
+      continue;
+    }
 
-    // Read plugin.json for the Web Component tag name
-    const pluginDir = join(dir, "..");
-    const pluginJsonPath = join(pluginDir, "plugin.json");
-    const manifest = JSON.parse(await Bun.file(pluginJsonPath).text())
-    const tag = manifest.frontendComponent || manifest.ui || manifest.feeds?.card || name
+    console.log(`vite: ${file} => ${output}`);
 
-    // Temp files
+    const content =
+      ext === "vue" || ext === "svelte" ? "" : await Bun.file(file).text();
+    const candidates = extMap[ext] || [];
+    const fwName =
+      candidates.length === 1
+        ? candidates[0]
+        : (candidates.find((n) =>
+            FRAMEWORKS[n].detect?.some((s) => content.includes(s)),
+          ) ?? candidates[0]);
+    const fw = FRAMEWORKS[fwName];
+
     const configFile = join(dir, ".vite.config.mjs");
     const cssFile = join(dir, "style.css");
     const entryFile = join(dir, "entry.tsx");
 
-    // Step 1: CSS (Tailwind available for ALL frameworks)
     writeFileSync(
       cssFile,
       "@tailwind base;\n@tailwind components;\n@tailwind utilities;\n",
     );
+    if (fw.entry) writeFileSync(entryFile, fw.entry(tag, tag + "." + ext));
 
-    // Step 2: entry.tsx - wraps React/Preact components as Web Components
-    if (fw.entry) writeFileSync(entryFile, fw.entry(tag, file))
-
-    // Step 3: Vite config
     const libEntry = fw.entry ? '"entry.tsx"' : '"index.js"';
     writeFileSync(
       configFile,
@@ -145,22 +169,20 @@ for (const dir of frontends) {
         `  plugins: [${fw.plugin}, injectCss()],`,
         `  define: { 'process.env.NODE_ENV': JSON.stringify('production') },`,
         `  build: {`,
-        `    lib: { entry: ${libEntry}, formats: ["iife"], name: "Widget", fileName: () => ${JSON.stringify(name + ".js")} },`,
-        `    outDir: ${JSON.stringify(".")},`,
+        `    lib: { entry: ${libEntry}, formats: ["iife"], name: "Widget", fileName: () => ${JSON.stringify(tag + ".js")} },`,
+        `    outDir: ${JSON.stringify(buildDir)},`,
         `    emptyOutDir: false,`,
         `  }`,
         `})`,
       ].join("\n"),
     );
 
-    // Step 4: Build
     await $`bunx vite build --config ${configFile}`;
 
-    // Step 5: Cleanup temp files
     unlinkSync(configFile);
     if (fw.entry) unlinkSync(entryFile);
     unlinkSync(cssFile);
   }
 }
 
-console.log("done")
+console.log("done");

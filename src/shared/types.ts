@@ -17,7 +17,7 @@ export interface PluginRequestResults {
 
 export interface FeedContrib {
   type: string    // e.g. "video", "post", "image"
-  method: string  // RPC method to call, e.g. "youtube.feed"
+  method?: string // RPC method to call (defaults to methods[0])
   card?: string   // WC tag, e.g. "yt-video-card" - path derived
 }
 
@@ -29,5 +29,6 @@ export interface PluginManifest {
   run?: string 
   methods?: string[] 
   ui?: string           // tag name for main-UI WC (only feed plugin)
-  feeds?: FeedContrib
+  feeds?: FeedContrib[]
+  hooks?: string[]
 }

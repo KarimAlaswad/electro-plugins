@@ -1,5 +1,5 @@
 import { BrowserWindow, BrowserView, Updater } from "electrobun/bun";
-import { readdirSync, existsSync } from "fs" 
+import { readdirSync, existsSync, lstatSync, readFileSync } from "fs" 
 import { join } from "path" 
 import type { PluginManifest } from "../shared/types" 
 import { Subprocess } from "bun";
@@ -52,18 +52,29 @@ function startStaticServer(): string {
 		},
 	})
 	console.log(`App server: http://localhost:${server.port}`)
+	console.log(`[host] Plugin dirs: ${manifests.map(m => m.name).join(", ")}`)
+	console.log(`[host] Spawned processes: ${plugins.map(p => p.config.name).join(", ") || "none"}`)
 	return `http://localhost:${server.port}`
 }
 
 // -- Load manifests --
-const pluginDirs = readdirSync(join(baseDir, "plugins"))
-	.filter(name => existsSync(join(baseDir, "plugins", name, "plugin.json")))
-
-const manifests: PluginManifest[] = []
-for (const name of pluginDirs) {
-	const text = await Bun.file(join(baseDir, "plugins", name, "plugin.json")).text()
-	manifests.push(JSON.parse(text))
+function getAllPluginManifests(dir: string): any[] {
+	let manifests: any[] = []
+	const files = readdirSync(dir)
+	for (const file of files) {
+		const fullPath = join(dir, file)
+		if (lstatSync(fullPath).isDirectory()) {
+			if (existsSync(join(fullPath, "plugin.json"))) {
+				const text = readFileSync(join(fullPath, "plugin.json"), "utf-8")
+				manifests.push(JSON.parse(text))
+			}
+			manifests = manifests.concat(getAllPluginManifests(fullPath))
+		}
+	}
+	return manifests
 }
+
+const manifests = getAllPluginManifests(join(baseDir, "plugins"))
 
 // -- Send JSON-RPC to a plugin's stdin --
 async function sendToPlugin(
@@ -177,28 +188,28 @@ for (const manifest of manifests) {
 }
 
 // -- Route a request to the plugin that handles it --
-async function routeRequest(method: string, params: any): Promise<any> {
-	for (const plugin of plugins) {
-		if (!plugin.alive) continue
-		for (const ns of plugin.config.methods || []) {
-			if (method.startsWith(ns)) {
-				const id = nextId++
-				return new Promise((resolve, reject) => {
-					const timer = setTimeout(() => {
-						pendingRequests.delete(id)
-						reject(
-							new Error(
-								`[${plugin.config.name}] timeout: ${method}`,
-							),
-						)
-					}, 10000)
-					pendingRequests.set(id, { resolve, reject, timer })
-					sendToPlugin(plugin, id, method, params)
-				})
-			}
-		}
+async function routeRequest(fullMethod: string, params: any): Promise<any> {
+	const parts = fullMethod.split('.')
+	const pluginName = parts[0]
+	const action = parts.slice(1).join('.')
+
+	console.log(`[host] routeRequest: "${fullMethod}" → plugin="${pluginName}" action="${action}"`)
+
+	const plugin = plugins.find(p => p.config.name === pluginName)
+	if (!plugin || !plugin.alive) {
+		console.error(`[host] Plugin not found or dead: ${pluginName}`)
+		throw new Error(`Plugin not found or dead: ${pluginName}`)
 	}
-	throw new Error(`No plugin handles: ${method}`)
+
+	const id = nextId++
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(() => {
+			pendingRequests.delete(id)
+			reject(new Error(`[${plugin.config.name}] timeout: ${fullMethod}`))
+		}, 10000)
+		pendingRequests.set(id, { resolve, reject, timer })
+		sendToPlugin(plugin, id, action, params)
+	})
 }
 
 // -- Electrobun RPC: bridge between WebView and plugins --
@@ -225,22 +236,62 @@ const rpc = BrowserView.defineRPC({
           methods: p.config.methods || [],
         }));
       },
-			getPluginManifests: async(__params: unknown) => {
+      getPluginManifests: async(__params: unknown) => {
+				console.log(`[host] getPluginManifests: returning ${manifests.length} manifests: ${manifests.map(m => m.name).join(", ")}`)
 				return manifests.map((m) => ({
 					name: m.name,
 					version: m.version,
 					description: m.description,
 					author: m.author,
 					methods: m.methods || [],
+					hooks: m.hooks || [],
 					ui: m.ui || null,
 					feeds: m.feeds || null,
 				}));
 			},
 			getPluginFrontend: async (params: unknown) => {
-				const { path } = params as { path: string };
-				const code = await Bun.file(join(baseDir, path)).text()
-				return { code };
+				const { path } = params as { path: string }
+				const fullPath = join(baseDir, path)
+				// Security: only allow serving from build/plugins/
+				if (!fullPath.startsWith(join(baseDir, "build", "plugins"))) {
+					console.error(`[host] Access denied: ${path} -> ${fullPath}`)
+					return { error: "Access denied" }
+				}
+				try {
+					const code = await Bun.file(fullPath).text()
+					console.log(`[host] getPluginFrontend: loaded ${path} (${code.length} bytes)`)
+					return { code }
+				} catch (e: any) {
+					console.error(`[host] getPluginFrontend failed: ${path} -> ${e.message}`)
+					return { error: `File not found: ${path}` }
+				}
 			},
+			resolveHook: async (params: unknown) => {
+				const { hook } = params as { hook: string }
+				const plugin = plugins.find(p => p.config.hooks?.includes(hook))
+				if (!plugin) return { success: false, error: `No plugin provides hook: ${hook}`}
+				return {
+					success: true,
+					data: { name: plugin.config.name, methods: plugin.config.methods || [] }
+				}
+			},
+			callHook: async (params: unknown) => {
+				const { hook, method, params: args } = params as {
+					hook: string;
+					method?: string;
+					params: any;
+				}
+				const plugin = plugins.find(p => p.config.hooks?.includes(hook))
+				if (!plugin) return { success: false, error: `No plugin provides hook: ${hook}`}
+				const m = method || plugin.config.methods?.[0]
+				if (!m) return { success: false, error: `No method specified and plugin has no methods` }
+				try {
+					const data = await routeRequest(plugin.config.name + '.' + m, args)
+					return { success: true, data }
+				} catch (e: any) {
+					return { success: false, error: e.message }
+				}
+			}
     },
     messages: {},
   },

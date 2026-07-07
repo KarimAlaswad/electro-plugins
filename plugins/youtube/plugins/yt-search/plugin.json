@@ -1,0 +1,7 @@
+{
+  "name": "yt-search",
+  "version": "1.0.0",
+  "run": "bun plugins/youtube/plugins/yt-search/main.ts",
+  "hooks": ["search"],
+  "methods": ["search"]
+}

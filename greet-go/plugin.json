@@ -1,9 +1,0 @@
-{
-  "name": "greet",
-  "version": "1.0.0",
-  "description": "Friendly greetings in Go",
-  "author": "Community",
-  "command": "./plugins/greet-go/greet",
-  "args": [],
-  "methods": ["greet.hello", "greet.bye"],
-}
