@@ -29,6 +29,7 @@ export interface PluginManifest {
   run?: string 
   methods?: string[] 
   ui?: string           // tag name for main-UI WC (only feed plugin)
+  components?: string[] // WC tags to build (cards, sub-components, not mounted automatically)
   feeds?: FeedContrib[]
   hooks?: string[]
 }

@@ -108,7 +108,10 @@ const pluginDirs = findPluginDirs("plugins");
 for (const dir of pluginDirs) {
   const manifest = JSON.parse(await Bun.file(join(dir, "plugin.json")).text());
   const tags = new Set();
-  if (manifest.ui) tags.add(manifest.ui);
+  if (manifest.ui) tags.add(manifest.ui)
+  if (manifest.components) manifest.components.forEach(t => tags.add(t))
+  if (manifest.feeds)
+    for (const f of manifest.feeds) if (f.card) tags.add(f.card)
   if (manifest.feeds)
     for (const f of manifest.feeds) if (f.card) tags.add(f.card);
 

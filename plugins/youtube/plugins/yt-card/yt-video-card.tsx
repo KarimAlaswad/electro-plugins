@@ -2,11 +2,12 @@ export default function YTVideoCard({ item }: { item: any }) {
   if (!item) return <div className="text-gray-400 p-4 text-sm">Loading...</div>;
 
   const handleClick = async () => {
-    await window.__pluginRpc('video-player.load', {
-      url: `https://www.youtube.com/embed/${item.videoId}`,
-      title: item.title
-    })
-  }
+    const url = `https://www.youtube.com/embed/${item.videoId}`;
+    await window.__pluginRpc("video-player.load", { url, title: item.title });
+    window.dispatchEvent(
+      new CustomEvent("player-load", { detail: { url, title: item.title } }),
+    );
+  };
 
   return (
     <div

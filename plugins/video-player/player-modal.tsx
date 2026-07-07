@@ -19,7 +19,12 @@ export default function PlayerModal() {
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
       onClick={() => setPlaying(null)}
     >
-      <video src={playing.url} controls autoPlay className="max-w-4xl" />
+      <iframe
+        src={playing.url}
+        className="w-full h-full max-w-4xl aspect-video"
+        allowFullScreen
+        allow="autoplay; encrypted-media"
+      />
     </div>
   );
 }
