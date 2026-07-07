@@ -1,0 +1,7 @@
+{
+  "name": "core-serve",
+  "version": "1.0.0",
+  "description": "Core plugin: detects Vite HMR or serves dist/",
+  "author": "Me",
+  "methods": ["start", "stop"]
+}

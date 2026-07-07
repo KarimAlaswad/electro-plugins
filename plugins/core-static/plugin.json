@@ -1,0 +1,7 @@
+{
+  "name": "core-static",
+  "version": "1.0.0",
+  "author": "Me",
+  "description": "Core plugin: reads static files from build/plugins/",
+  "methods": ["read"]
+}

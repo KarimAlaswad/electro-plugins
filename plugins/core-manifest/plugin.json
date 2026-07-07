@@ -1,0 +1,7 @@
+{
+  "name": "core-manifest",
+  "version": "1.0.0",
+  "description": "Core plugin: reads plugin manifests from filesystem",
+  "author": "Me",
+  "methods": ["scan"]
+}

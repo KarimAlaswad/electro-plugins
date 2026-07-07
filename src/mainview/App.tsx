@@ -42,7 +42,7 @@ export default function App() {
   }, [])
   async function init() {
     console.log("[app] init: fetching manifests...")
-    const all: PluginManifest[] = await electroview.rpc.request.getPluginManifests({})
+    const all: PluginManifest[] = await window.__pluginRpc('core-manifest.scan', {})
     console.log("[app] manifests received:", all.map(m => `${m.name}${m.feeds?.length ? " (feeds)" : ""}${m.ui ? " (ui:"+m.ui+")" : ""}${m.hooks?.length ? " (hooks:"+m.hooks+")" : ""}`))
     setManifests(all)
 
@@ -82,10 +82,9 @@ export default function App() {
   }
 
   async function loadFrontend(path: string) {
-    const res = await electroview.rpc.request.getPluginFrontend({ path })
-    if (res.error) throw new Error(`loadFrontend(${path}): ${res.error}`)
+    const result = await window.__pluginRpc("core-static.read", { path })
     const script = document.createElement("script")
-    script.textContent = res.code
+    script.textContent = result.code
     document.body.appendChild(script)
   }
 

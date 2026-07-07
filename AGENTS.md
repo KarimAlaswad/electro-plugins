@@ -37,6 +37,24 @@ card WCs via `CardRenderer`. Plugin manifest simplified: `run` replaces `command
 `feeds` block replaces `frontendComponent`/`frontendFile`/`frontendSlot`, new `components`
 field for WC tags that need building but should NOT be mounted as main UI.
 
+Phase 4 (Core Plugin Extraction) IS COMPLETE — host core simplified from ~340 to ~211 lines.
+FS manifest scanning extracted to `core-manifest` plugin, static file serving extracted to
+`core-static` plugin. Host reduced to pure spawn+route+lifecycle: one `spawnPlugin()` function,
+one `readStream()` reader (covers both stdout/stderr), 3 RPC handlers (`pluginRequest`,
+`resolveHook`, `callHook`). System plugins are hardcoded in host, spawned before user plugins.
+Host calls `core-manifest.scan` internally to get user manifests, then spawns user plugins.
+All user-facing calls go through `__pluginRpc` (App.tsx calls `core-manifest.scan` and
+`core-static.read` directly). Ready for Rust rewrite: plugins unchanged, only host rewrites.
+Host is ~245 lines, 3 RPC handlers, 1 `spawnPlugin()` function, 1 `readStream()` function.
+
+Host is ~211 lines, 3 RPC handlers, 1 `spawnPlugin()` function, 1 `readStream()` function.
+6 backend plugins share a common boilerplate lib via `plugins/_shared/stdin.ts` (38 lines):
+`startStdin()` + `createSend()` eliminates duplicate stdin reader, send(), and handleRequest()
+code across core-manifest, core-static, core-serve, yt-feed, yt-auth, yt-search, and peertube.
+`core-serve` plugin extracted: detects Vite HMR (port 5173), falls back to Bun.serve(dist/).
+Includes `stop` method for clean SIGINT shutdown. Host no longer imports `Updater`.
+Cleanup ordering: stop core-serve first, then kill remaining plugins.
+
 Current working state: Feed-widget displays all 5 render states (loading, auth-required,
 error per source, empty, cards). yt-feed (YouTube feed via Innertube API) works with
 lazy cookie reload. yt-auth plugin provides login/logout/status using browser DB discovery
@@ -44,7 +62,8 @@ and writes shared cookie file. yt-card provides `yt-video-card` as a `components
 (not `ui` — never mounted as top-level view, only instantiated per feed item). Player modal
 uses iframe and `player-load` custom event. peertube-card and peertube-feed are functional
 for PeerTube. Sign-in buttons per auth plugin are shown/hidden based on searching ALL
-manifests for a plugin with `methods.includes("login")`.
+manifests for a plugin with `methods.includes("login")`. Host is ~245 lines, 3 RPC handlers,
+1 `spawnPlugin()` function, 1 `readStream()` function.
 
 ---
 
@@ -134,17 +153,17 @@ building the first real API plugin to fetch internet data and show it on screen.
 │         │     → electroview.rpc.request.pluginRequest()          │
 │         ▼                                                        │
 │  ┌────────────────────────────────────────────────────────────┐  │
-│  │ Host (Bun process — src/bun/index.ts ~272 lines)           │  │
+│  │ Host (Bun process — src/bun/index.ts ~245 lines)           │  │
 │  │ 1. findProjectRoot() — walks up from import.meta.dir       │  │
-│  │ 2. Scans plugins/*/plugin.json via readdirSync + JSON.parse│  │
-│  │ 3. resolvePath() — makes relative paths absolute for spawn │  │
-│  │ 4. Spawns plugins via Bun.spawn() (stdin/stdout pipes)     │  │
-│  │ 5. sendToPlugin() — writes JSON to plugin stdin            │  │
-│  │ 6. readStdout() — async reader with line buffering         │  │
-│  │ 7. routeRequest() — method prefix match → Promise(10s)     │  │
-│  │ 8. 4 RPC handlers: pluginRequest, pluginList,              │  │
-│  │    getPluginManifests, getPluginFrontend                    │  │
-│  │ 9. Health check (5s), SIGINT cleanup                       │  │
+│  │ 2. resolvePath() — makes relative paths absolute for spawn │  │
+│  │ 3. Spawns system plugins (core-manifest, core-static)       │  │
+│  │ 4. Calls core-manifest.scan internally → gets user manifests│  │
+│  │ 5. Spawns user plugins via Bun.spawn() (stdin/stdout pipes)│  │
+│  │ 6. sendToPlugin() — writes JSON to plugin stdin            │  │
+│  │ 7. readStream() — single async reader (handles both pipes) │  │
+│  │ 8. routeRequest() — method prefix match → Promise(10s)     │  │
+│  │ 9. 3 RPC handlers: pluginRequest, resolveHook, callHook    │  │
+│  │ 10. Health check (5s), SIGINT cleanup                       │  │
 │  └──┬────────────────┬───────────────────────────────────────┘  │
 │     │ stdin/stdout   │ stdin/stdout                              │
 │  ┌──▼──────────┐  ┌─▼────────────┐                              │
@@ -166,12 +185,12 @@ building the first real API plugin to fetch internet data and show it on screen.
 ```
 
 ### Data Flow (End-to-End — Phase 3)
-1. App starts → Host spawns all backend plugins with `run` field via recursive manifest scan
+1. App starts → Host spawns system plugins (core-manifest, core-static), then calls `core-manifest.scan` to discover user plugins, then spawns user plugins
 2. WebView loads → App.tsx mounts (Electroview RPC bridge initialized)
-3. App.tsx calls `getPluginManifests` → gets array of all manifests
+3. App.tsx calls `__pluginRpc("core-manifest.scan", {})` → gets array of all manifests
 4. App.tsx collects WC tags from `feeds[*].card` and `ui` fields (dedup)
 5. For each unique tag:
-   - Call `getPluginFrontend({ path: "build/plugins/<tag>.js" })` → returns JS as string
+   - Call `__pluginRpc("core-static.read", { path: "build/plugins/<tag>.js" })` → returns JS as string
    - Create `<script>` element, set `textContent` = code, append to `<body>`
    - Script calls `customElements.define()` → Web Component registered globally
 6. App.tsx builds `uiPlugins[]` array, creates each UI WC imperatively via `document.createElement` in `#feed-container`, sets `.manifests = all`
@@ -219,23 +238,20 @@ building the first real API plugin to fetch internet data and show it on screen.
 │
 ├── src/
 │   ├── bun/
-│   │   └── index.ts                 # HOST (~450 lines)
+│   │   └── index.ts                 # HOST (~245 lines)
 │   │       - Types: PendingRequest, PluginInstance
 │   │       - findProjectRoot(): walks up from import.meta.dir to find package.json
 │   │       - resolvePath(): makes relative paths absolute for Bun.spawn args
-│   │       - Manifest scanning: recursive scan plugins/**/plugin.json + JSON.parse
+│   │       - Single `spawnPlugin()` function (covers system + user plugins)
 │   │       - Plugin spawning: Bun.spawn(), push to array, start readers
 │   │       - sendToPlugin(): stdin.write() (FileSink, not getWriter)
 │   │       - handlePluginResponse(): JSON.parse → match by id → resolve/reject → delete
-│   │       - readStdout(): async reader, buffers partial lines across chunks
-│   │       - readStderr(): same pattern, logs to console
+│   │       - readStream(): single async reader for both stdout + stderr
 │   │       - routeRequest(): method prefix match → Promise with 10-second timeout
-│   │       - 4 original RPC handlers + 2 new hook handlers (see RPC table)
-│   │       - resolveHook(hook): finds all plugins matching a hook (e.g., "feed.video")
-│   │       - callHook(hook, method?, params): calls resolveHook + pluginRequest on each
-│   │       - Reads `run`, `methods`, `ui`, `feeds[]`, `components[]`, `hooks[]`
-│   │       - getPluginFrontend takes { path } (e.g., "build/plugins/feed-widget.js")
-│   │       - getMainViewUrl(): checks Vite HMR on port 5173, falls back to bundled
+│   │       - 3 RPC handlers: pluginRequest, resolveHook, callHook
+│   │       - System plugins hardcoded, spawned first (core-manifest, core-static)
+│   │       - Calls `core-manifest.scan` internally to get user manifests
+│   │       - getMainViewUrl(): checks Vite HMR on port 5173, falls back to Bun.serve
 │   │       - BrowserWindow creation, health check interval (5s), SIGINT cleanup
 │   │
 │   ├── mainview/
@@ -266,10 +282,22 @@ building the first real API plugin to fetch internet data and show it on screen.
 │           - For simple WCs that don't need _item/_manifests setters
 │
 ├── plugins/
+│   ├── core-manifest/               # Core plugin: FS manifest scanning
+│   │   ├── plugin.json              # { name: "core-manifest", methods: ["scan"] }
+│   │   └── main.ts                  # Recursive scan plugins/**/plugin.json
+│   │       - Returns manifests (full with `run`, or safe for frontend)
+│   │       - baseDir passed as CLI arg by host
+│   ├── core-static/                 # Core plugin: static file serving
+│   │   ├── plugin.json              # { name: "core-static", methods: ["read"] }
+│   │   └── main.ts                  # Reads files from build/plugins/
+│   │       - Security restriction: path must start with build/plugins/
+│   │       - baseDir passed as CLI arg by host
+│   ├── core-serve/                   # Core plugin: Vite HMR detection + Bun.serve(dist/)
+│   │   ├── plugin.json              # { name: "core-serve", methods: ["start", "stop"] }
+│   │   └── main.ts                  # ~40 lines: fetch(5173), fallback Bun.serve, stop()
+│   ├── _shared/                      # Shared plugin boilerplate (per-language SDK)
+│   │   └── stdin.ts                 # startStdin() + createSend() — eliminates dup code
 │   ├── feed/                        # Feed orchestrator (no backend)
-│   │   ├── plugin.json              # { name: "feed", ui: "feed-widget" }
-│   │   └── feed-widget.tsx          # React WC — feed orchestrator
-│   │       - .manifests setter from App.tsx
 │   │       - 5-state machine: loading, error, empty, partial, loaded
 │   │       - For each manifest with feeds[]: calls callHook(feeds[].type, feeds[].method)
 │   │       - CardRenderer: creates card WCs, sets .item, uses whenDefined
@@ -371,25 +399,25 @@ for (const plugin of plugins) {
 
 ---
 
-## Host Behavior (src/bun/index.ts — ~340 lines)
+## Host Behavior (src/bun/index.ts — ~245 lines)
 
 ### Startup Sequence
 1. `findProjectRoot(import.meta.dir)` — walks up directory tree until `package.json` found. Works in both dev and bundled modes.
 2. `baseDir = findProjectRoot(...)` — store the project root absolute path
-3. `getAllPluginManifests(join(baseDir, "plugins"))` — recursive directory scan: for each dir with `plugin.json`, parse JSON; recurse into subdirectories. Supports nested plugins (e.g., `plugins/youtube/plugins/yt-feed/`).
-4. For each manifest with `run` field (formerly `"command"`):
-   a. Split `run` by whitespace → `[cmd, ...args]` (single string for command + args)
-   b. `resolvePath(cmd)` and `resolvePath(args)` — if relative, join with baseDir; absolute as-is; bare name (bun/python3) returned unmodified
-   c. `Bun.spawn([cmd, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" })`
-   d. Store as `PluginInstance { config: manifest, process: proc, alive: true }`
-   e. Start async `readStdout(plugin)` + `readStderr(plugin)`
-   f. `proc.exited.then(code => { plugin.alive = false })` — marks dead on exit
-5. Define RPC handlers via `BrowserView.defineRPC()` — 6 request handlers (see RPC table)
-6. If bundled mode (no Vite): start static server via `startStaticServer()` -> `Bun.serve()` that serves `dist/` or `views/mainview/`
-7. `getMainViewUrl()` — checks Vite HMR on port 5173 (in dev channel), returns dev URL if available, else bundled HTML via static server
-8. `new BrowserWindow({ title, url, frame, rpc })` — create the app window
-9. `setInterval()` — health check every 5 seconds (logs dead plugins, no auto-restart)
-10. `process.on("SIGINT")` — stop server, kill all plugin processes, exit
+3. Resolve path function: `resolvePath(p)` — if relative, join with baseDir; absolute as-is; bare name (bun/python3) returned unmodified
+4. Spawn system plugins via `spawnPlugin()` — hardcoded plugins core-manifest and core-static spawned first (they are needed for user plugin discovery)
+5. Call `core-manifest.scan` via `routeRequest()` — returns user plugin manifests with `run` field
+6. For each user manifest with `run`:
+   a. Split `run` by whitespace → `[cmd, ...args]`
+   b. `Bun.spawn([cmd, ...args], { stdin: "pipe", stdout: "pipe", stderr: "pipe" })`
+   c. Store as `PluginInstance { config: manifest, process: proc, alive: true }`
+   d. Start `readStream()` on both stdout + stderr with appropriate callbacks
+   e. `proc.exited.then(code => { plugin.alive = false })` — marks dead on exit
+7. Define RPC handlers via `BrowserView.defineRPC()` — 3 request handlers (see RPC table)
+8. `getMainViewUrl()` — checks Vite HMR on port 5173 (in dev channel), returns dev URL if available, else starts inline `Bun.serve()` that serves `dist/`
+9. `new BrowserWindow({ title, url, frame, rpc })` — create the app window
+10. `setInterval()` — health check every 5 seconds (logs dead plugins, no auto-restart)
+11. `process.on("SIGINT")` — stop server, kill all plugin processes, exit
 
 ### RPC Handlers
 
@@ -398,23 +426,20 @@ All handlers use `(params: unknown) =>` with internal casts.
 | Handler | Params (cast from unknown) | Returns |
 |---------|---------------------------|---------|
 | `pluginRequest` | `{ method: string, params: any }` | `{ success, data?, error? }` |
-| `pluginList` | ignored | `[{ name, alive, methods }]` |
-| `getPluginManifests` | ignored | `[{ name, version?, description?, author?, methods[], hooks[], ui?, feeds? }]` |
-| `getPluginFrontend` | `{ path: string }` | `{ code: string }` or `{ error: string }` |
 | `resolveHook` | `{ hook: string }` | `{ success, data: { name, methods } }` or `{ success: false, error }` |
 | `callHook` | `{ hook: string, method?: string, params: any }` | `{ success, data? }` or `{ success: false, error }` |
 
 **RPC details:**
 - `pluginRequest(method, params)`: calls `routeRequest(method, params)` which splits method by `.` — first part is plugin name, rest is action. Finds plugin by `config.name`, sends `{id, method: action, params}` via stdin. Returns Promise with 10s timeout.
-- `getPluginManifests`: returns all manifests with fields: name, version, description, author, methods, hooks, ui, feeds. No `components` field returned (yet — yt-card still identified for frontend loading by App.tsx scanning feeds[].card + ui).
-- `getPluginFrontend({ path })`: restricted to `build/plugins/` directory (security). Reads file via `Bun.file().text()`.
 - `resolveHook({ hook })`: finds first plugin with `config.hooks.includes(hook)`. Returns `{name, methods}`.
 - `callHook({ hook, method?, params })`: finds plugin for hook, calls `routeRequest(name.method, params)`. Defaults to `methods[0]` if no method specified.
 
-### stdout Reader (readStdout)
-- Web Streams API: `plugin.process.stdout.getReader()`
+### stdout/stderr Reader (readStream)
+- Single generic async reader: `readStream(stream, name, onLine)`
+- Web Streams API: `stream.getReader()`
 - Buffers partial lines across chunks (split by `\n`, keep incomplete line in buffer via `lines.pop()`)
-- Each complete line passed to `handlePluginResponse()`
+- Each complete line passed to `onLine` callback
+- Used for both stdout (response parsing) and stderr (console logging)
 
 ### Response Handling (handlePluginResponse)
 1. `JSON.parse(line)` → get `msg`
@@ -1118,9 +1143,37 @@ The plugin never depends on what version of React/Vue/Preact the host app uses.
 - [x] 7 new bugs fixed (#13-#19) — all from this session
 - [x] All new architecture documented in AGENTS.md
 
+### ✅ COMPLETED — Phase 4b: Core Plugin Extraction (Extended)
+- [x] `core-serve` plugin extracted (Vite HMR detection + Bun.serve fallback)
+- [x] Host no longer imports `Updater` or manages server reference
+- [x] `plugins/_shared/stdin.ts` shared lib eliminates duplicate stdin boilerplate
+- [x] All 6 TS backend plugins simplified via `startStdin()` + `createSend()`
+- [x] Plugin line count reduced: core-manifest 64→28, core-static 41→17, yt-feed 100→68,
+      yt-auth 247→200, yt-search 56→30, peertube 72→36 (+38 for shared lib = net -137 lines)
+- [x] Cleanup ordering: stop core-serve, then kill remaining plugins
+- [x] Host down to 211 lines, 6 TS errors fixed
+- [x] Build verified (typecheck, build:plugins, vite build all pass)
+
+### ✅ COMPLETED — Phase 4a: Initial Core Extraction
+- [x] FS manifest scanning extracted to `core-manifest` plugin
+- [x] Static file serving extracted to `core-static` plugin
+- [x] Security restriction (path must start with `build/plugins/`) moved to plugin
+- [x] Host reduced from ~340 to ~245 lines: `readStdout`+`readStderr` merged into `readStream()`
+- [x] `spawnSystemPlugin` + user loop merged into single `spawnPlugin()`
+- [x] `pluginList` RPC removed (dead code)
+- [x] `getPluginManifests` + `getPluginFrontend` RPCs removed (now plugins)
+- [x] `getAllPluginManifests` FS function removed from host
+- [x] `startStaticServer` replaced with inline `Bun.serve` in `getMainViewUrl()`
+- [x] System plugins hardcoded, spawned before user plugins
+- [x] Host calls `core-manifest.scan` internally to discover user manifests
+- [x] App.tsx calls `core-manifest.scan` + `core-static.read` via `__pluginRpc`
+- [x] All existing plugins unchanged (yt-feed, yt-auth, yt-search, yt-card, peertube, video-player, feed)
+- [x] 302 → 245 lines, 3 RPC handlers, 1 reader, 1 spawn function
+- [x] All bugs fixed and verified running
+
 ### ❌ PLANNED — Future Work
 
-**Phase 4: Feed Polish**
+**Phase 5: Feed Polish**
 - [ ] Add sorting/interleaving across sources in feed
 - [ ] Design generalized feed type system (video, short, image, post, etc.)
 - [ ] Add "media-type" tab navigation in feed-widget
