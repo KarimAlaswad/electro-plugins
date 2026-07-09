@@ -1,3 +1,4 @@
+import { createInterface } from "readline";
 import { Innertube, UniversalCache } from "youtubei.js";
 import { join } from "path";
 import {
@@ -11,13 +12,19 @@ import {
 import { Database } from "bun:sqlite";
 import { platform, homedir } from "os";
 import { getCookies, toCookieHeader } from "@steipete/sweet-cookie";
-import { startStdin } from "../../../_shared/stdin.ts";
 
 let cookieStr: string | null = null;
 let accountName: string | null = null;
 const cookieFile = join(import.meta.dir, "..", "..", ".youtube-cookie");
 const HOME = homedir();
 const OS = platform();
+
+function send(id: number | null, result?: any, error?: string) {
+  const msg: any = { id };
+  if (error) msg.error = error;
+  else msg.result = result;
+  process.stdout.write(JSON.stringify(msg) + "\n");
+}
 
 function loadCookie(): string | null {
   try {
@@ -174,27 +181,67 @@ async function discoverAllCookies(): Promise<CookieEntry[] | null> {
   return all;
 }
 
-startStdin(async (req, send) => {
-  if (req.method === "status") {
-    send(req.id, { loggedIn: !!cookieStr, accountName })
-  } else if (req.method === "login") {
-    const entries = await discoverAllCookies()
-    if (!entries) {
-      send(req.id, null, "No YouTube session found. Sign in to youtube.com in your browser first.")
-      return
+async function handleRequest(request: any) {
+  const method = request.method;
+  const reqId = request.id;
+  try {
+    if (method === "status") {
+      send(reqId, { loggedIn: !!cookieStr, accountName });
+    } else if (method === "login") {
+      const entries = await discoverAllCookies();
+      if (!entries) {
+        send(
+          reqId,
+          null,
+          "No YouTube session found in any browser. Sign in to youtube.com in your browser first.",
+        );
+        return;
+      }
+      const str = toCookieHeader(entries);
+      saveCookie(str);
+      cookieStr = str;
+      const tube = await Innertube.create({
+        cookie: cookieStr,
+        cache: new UniversalCache(true),
+      });
+      try {
+        const info = await tube.account.getInfo();
+        const item = info.contents?.contents?.find((c: any) => c.is_selected);
+        accountName = item?.account_name?.text || null;
+      } catch {
+        accountName = null;
+      }
+      send(reqId, { success: true, accountName });
+    } else if (method === "logout") {
+      deleteCookie();
+      cookieStr = null;
+      accountName = null;
+      send(reqId, { success: true });
+    } else {
+      send(reqId, null, "Method not found: " + method);
     }
-    const str = toCookieHeader(entries)
-    saveCookie(str); cookieStr = str
-    try {
-      const tube = await Innertube.create({ cookie: cookieStr, cache: new UniversalCache(true) })
-      const info = await tube.account.getInfo()
-      accountName = info.contents?.contents?.find((c: any) => c.is_selected)?.account_name?.text || null
-    } catch { accountName = null }
-    send(req.id, { success: true, accountName })
-  } else if (req.method === "logout") {
-    deleteCookie(); cookieStr = null; accountName = null
-    send(req.id, { success: true })
-  } else {
-    send(req.id, null, "Method not found: " + req.method)
+  } catch (e: any) {
+    send(reqId, null, e.message || String(e));
   }
-})
+}
+
+const rl = createInterface({ input: process.stdin });
+const queue: string[] = [];
+let busy = false;
+rl.on("line", (line: string) => {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  queue.push(trimmed);
+  if (!busy) processNext();
+});
+async function processNext() {
+  busy = true;
+  while (queue.length > 0) {
+    try {
+      await handleRequest(JSON.parse(queue.shift()!));
+    } catch {
+      send(null, null, "Parse error");
+    }
+  }
+  busy = false;
+}
